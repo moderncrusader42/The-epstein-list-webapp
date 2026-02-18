@@ -18,6 +18,7 @@ NAVIGATION_ORDER: tuple[str, ...] = (
     "the-list",
     "theories",
     "sources",
+    "unsorted-files",
     "the-list-review",
     "privileges",
     "admin",
@@ -35,6 +36,12 @@ PAGE_REGISTRY: dict[str, PageLink] = {
     "the-list": PageLink("the-list", "The List", "/the-list/", "hdr-link hdr-link--the-list"),
     "theories": PageLink("theories", "Theories", "/theories/", "hdr-link hdr-link--theories"),
     "sources": PageLink("sources", "Sources", "/sources/", "hdr-link hdr-link--sources"),
+    "unsorted-files": PageLink(
+        "unsorted-files",
+        "Unsorted files",
+        "/unsorted-files/",
+        "hdr-link hdr-link--unsorted-files",
+    ),
     "the-list-review": PageLink(
         "the-list-review",
         "The List Review",
@@ -52,11 +59,11 @@ PAGE_REGISTRY: dict[str, PageLink] = {
 
 _EMPTY: set[str] = set()
 PRIVILEGE_PAGE_MAP: dict[str, set[str]] = {
-    "base_user": {"home", "the-list", "theories", "sources"},
-    "reviewer": {"home", "the-list", "theories", "sources", "the-list-review"},
-    "editor": {"home", "the-list", "theories", "sources"},
-    "admin": {"home", "the-list", "theories", "sources", "privileges"},
-    "creator": {"home", "the-list", "theories", "sources", "privileges", "admin"},
+    "base_user": {"home", "the-list", "theories", "sources", "unsorted-files"},
+    "reviewer": {"home", "the-list", "theories", "sources", "unsorted-files", "the-list-review"},
+    "editor": {"home", "the-list", "theories", "sources", "unsorted-files"},
+    "admin": {"home", "the-list", "theories", "sources", "unsorted-files", "privileges"},
+    "creator": {"home", "the-list", "theories", "sources", "unsorted-files", "privileges", "admin"},
 }
 
 DEBUG_PRIVILEGES_ENV = "THELIST_DEBUG_PRIVILEGES"
@@ -67,7 +74,9 @@ PATH_TO_PAGE_KEY: dict[str, Optional[str]] = {
     "/the-list": "the-list",
     "/theories": "theories",
     "/sources": "sources",
+    "/source-create": "sources",
     "/sources-individual": "sources",
+    "/unsorted-files": "unsorted-files",
     "/people-display": "the-list",
     "/theory-display": "theories",
     "/people-create": "the-list",

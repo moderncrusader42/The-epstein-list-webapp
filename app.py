@@ -67,7 +67,9 @@ from src.pages.admin.app_admin import make_admin_app
 from src.pages.the_list.app_the_list import make_the_list_app
 from src.pages.theories.app_theories import make_theories_app
 from src.pages.sources_list.app_sources import make_sources_app
+from src.pages.sources_list.app_sources_create import make_sources_create_app
 from src.pages.sources_individual.app_sources_individual import make_sources_individual_app
+from src.pages.unsorted_files.app_unsorted_files import make_unsorted_files_app
 from src.pages.people_display.app_people_display import make_people_display_app
 from src.pages.theory_display.app_theory_display import make_theory_display_app
 from src.pages.people_display.app_people_create import make_people_create_app
@@ -265,7 +267,9 @@ profile_app    = make_profile_app()
 the_list_app   = make_the_list_app()
 theories_app   = make_theories_app()
 sources_app    = make_sources_app()
+sources_create_app = make_sources_create_app()
 sources_individual_app = make_sources_individual_app()
+unsorted_files_app = make_unsorted_files_app()
 people_display_app = make_people_display_app()
 theory_display_app = make_theory_display_app()
 people_create_app = make_people_create_app()
@@ -282,7 +286,9 @@ mount_gradio_app(app, profile_app,   "/profile", secret_key=session_secret)
 mount_gradio_app(app, the_list_app,  "/the-list", secret_key=session_secret)
 mount_gradio_app(app, theories_app,  "/theories", secret_key=session_secret)
 mount_gradio_app(app, sources_app,  "/sources", secret_key=session_secret)
+mount_gradio_app(app, sources_create_app,  "/source-create", secret_key=session_secret)
 mount_gradio_app(app, sources_individual_app,  "/sources-individual", secret_key=session_secret)
+mount_gradio_app(app, unsorted_files_app,  "/unsorted-files", secret_key=session_secret)
 mount_gradio_app(app, people_display_app,  "/people-display", secret_key=session_secret)
 mount_gradio_app(app, theory_display_app,  "/theory-display", secret_key=session_secret)
 mount_gradio_app(app, people_create_app,  "/people-create", secret_key=session_secret)

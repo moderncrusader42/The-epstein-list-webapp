@@ -29,11 +29,24 @@ def make_home_app() -> gr.Blocks:
             hero = gr.HTML()
             gr.Markdown(
                 """
-                ### Main Panel
-                This instance has been simplified for the next phase of the project.
+                ### How This Website Works
 
-                - Use **Privileges** to manage access.
-                - Use **Administration** to review or edit available tables.
+                1. **The List**
+                The List tracks every person who appears in the files, whether they are guilty or not. Soon there will be a toggle to show only guilty people by default, with non-guilty entries available on demand.
+
+                2. **Sources**
+                The Sources page organizes evidence used to explain what people in The List did or what happened to them. A source can be simple (for example, "Michael knew him" with photos together) or more complex using markdown explanations.
+
+                3. **Unsorted Files**
+                Reliable official files are expected to appear in Unsorted Files first. From there, they can be reviewed and turned into Sources.
+
+                4. **Theories**
+                Theories are separate from The List but can be referenced from people entries. Example: a theory that someone was switched out, with comparison images and markdown explanation.
+
+                5. **Permissions and Review Flow**
+                Any signed-in user can submit proposals. Reviewers can accept or decline proposals. Trusted contributors can become Editors and bypass reviewer approval for their own edits, and can later become Reviewers. Admin permissions manage access and oversight. All proposal edits and decisions are traceable, so you can see who submitted, edited, and accepted each change.
+
+                We are actively looking for contributors right now, so role assignments are currently being handled with flexibility.
                 """
             )
 

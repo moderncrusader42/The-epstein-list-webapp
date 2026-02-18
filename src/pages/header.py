@@ -13,8 +13,8 @@ timing_logger = logging.getLogger("uvicorn.error")
 LOGO_URL = "/images/The-list-logo2.png"
 FAVICON_URL = "/images/The-list-logo2.png"
 _SECTION_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("General", ("home", "the-list", "theories", "sources", "the-list-review")),
-    ("Management", ("privileges",)),
+    ("General", ("home", "the-list", "theories", "sources", "unsorted-files")),
+    ("Management", ("the-list-review", "privileges")),
     ("Administration", ("admin",)),
 )
 _LABEL_OVERRIDES = {
@@ -22,6 +22,7 @@ _LABEL_OVERRIDES = {
     "the-list": "The List",
     "theories": "Theories",
     "sources": "Sources",
+    "unsorted-files": "Unsorted files",
     "the-list-review": "The List Review",
     "admin": "Administration",
 }
@@ -61,6 +62,11 @@ _ICON_PATHS: dict[str, str] = {
     "sources": (
         '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1H3V6z"/>'
         '<path d="M3 10h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8z"/>'
+    ),
+    "unsorted-files": (
+        '<path d="M4 6.5a2.5 2.5 0 0 1 2.5-2.5h3.9a2 2 0 0 1 1.4.58L13 5.76h4.5A2.5 2.5 0 0 1 20 8.26V17.5A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-11Z"/>'
+        '<path d="M8 10h8"/>'
+        '<path d="M8 14h6"/>'
     ),
     "the-list-review": (
         '<path d="M4 5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5z"/>'
