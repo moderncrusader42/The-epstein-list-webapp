@@ -6,7 +6,6 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 . "$SCRIPT_DIR/env.dev"
 
 
-SERVICE_ACCOUNT_EMAIL="deployment-the-list-sa-dev@the-list-webapp-dev.iam.gserviceaccount.com"
 SERVICE_ACCOUNT_RESOURCE="projects/${PROJECT_ID}/serviceAccounts/${SERVICE_ACCOUNT_EMAIL}"
 
 
