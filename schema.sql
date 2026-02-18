@@ -346,6 +346,37 @@ CREATE TABLE IF NOT EXISTS app.unsorted_file_push_proposals (
   UNIQUE (unsorted_file_id, source_id, proposer_user_id)
 );
 
+-- Proposal that an unsorted file should receive source-shared tags.
+CREATE TABLE IF NOT EXISTS app.unsorted_file_tag_proposals (
+  id               BIGSERIAL PRIMARY KEY,
+  unsorted_file_id BIGINT NOT NULL REFERENCES app.unsorted_files(id) ON DELETE CASCADE,
+  proposer_user_id BIGINT NOT NULL REFERENCES app."user"(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  tags_json        TEXT NOT NULL DEFAULT '[]',
+  note             TEXT NOT NULL DEFAULT '',
+  status           TEXT NOT NULL DEFAULT 'pending',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_at      TIMESTAMPTZ,
+  reviewer_user_id BIGINT REFERENCES app."user"(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  review_note      TEXT,
+  CONSTRAINT chk_unsorted_tag_status
+    CHECK (lower(status) IN ('pending', 'accepted', 'declined')),
+  UNIQUE (unsorted_file_id, proposer_user_id)
+);
+
+-- Normalized tags attached to each unsorted-file tag proposal.
+CREATE TABLE IF NOT EXISTS app.unsorted_file_tag_proposal_tags (
+  proposal_id BIGINT NOT NULL REFERENCES app.unsorted_file_tag_proposals(id) ON DELETE CASCADE,
+  tag_code    TEXT NOT NULL,
+  tag_label   TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pk_unsorted_file_tag_proposal_tags
+    PRIMARY KEY (proposal_id, tag_code),
+  CONSTRAINT chk_unsorted_file_tag_proposal_tag_code
+    CHECK (btrim(tag_code) <> ''),
+  CONSTRAINT chk_unsorted_file_tag_proposal_tag_label
+    CHECK (btrim(tag_label) <> '')
+);
+
 CREATE INDEX IF NOT EXISTS idx_user_email_lower
   ON app."user" (lower(email));
 
@@ -519,4 +550,16 @@ CREATE INDEX IF NOT EXISTS idx_unsorted_actions_type
 
 CREATE INDEX IF NOT EXISTS idx_unsorted_push_proposals_file_source
   ON app.unsorted_file_push_proposals(unsorted_file_id, source_id);
+
+CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposals_file_status
+  ON app.unsorted_file_tag_proposals(unsorted_file_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposals_proposer_file
+  ON app.unsorted_file_tag_proposals(proposer_user_id, unsorted_file_id);
+
+CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_proposal
+  ON app.unsorted_file_tag_proposal_tags(proposal_id);
+
+CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_code
+  ON app.unsorted_file_tag_proposal_tags(tag_code);
 º

@@ -8,15 +8,18 @@ import gradio as gr
 from src.page_timing import timed_page_load
 from src.pages.header import render_header, with_light_mode_head
 from src.pages.unsorted_files.core_unsorted_files import (
+    _cancel_unsorted_tags_modal,
     _cancel_unsorted_push_modal,
     _close_unsorted_upload_panel,
     _load_unsorted_files_page,
     _mark_unsorted_too_redacted,
     _mark_unsorted_useless,
     _next_unsorted_file,
+    _open_unsorted_tags_modal,
     _open_unsorted_push_modal,
     _open_unsorted_upload_panel,
     _previous_unsorted_file,
+    _submit_unsorted_tags_proposal,
     _submit_unsorted_push_to_source,
     _upload_unsorted_files,
 )
@@ -26,6 +29,7 @@ logger = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent
 CSS_PATH = ASSETS_DIR / "css" / "unsorted_files_page.css"
 JS_PATH = ASSETS_DIR / "js" / "unsorted_files_page.js"
+TAGS_JS_PATH = ASSETS_DIR / "js" / "unsorted_tags_editor.js"
 
 
 def _read_asset(path: Path) -> str:
@@ -40,8 +44,8 @@ def _load_css() -> str:
     return _read_asset(CSS_PATH)
 
 
-def _load_script() -> str:
-    script = _read_asset(JS_PATH)
+def _load_script(path: Path) -> str:
+    script = _read_asset(path)
     if not script:
         return ""
     return f"<script>\n{script}\n</script>"
@@ -105,12 +109,12 @@ def _start_unsorted_upload():
 
 def make_unsorted_files_app() -> gr.Blocks:
     stylesheet = _load_css()
-    script = _load_script()
+    scripts = "\n".join(part for part in (_load_script(JS_PATH), _load_script(TAGS_JS_PATH)) if part)
 
     with gr.Blocks(
         title="Unsorted files",
         css=stylesheet or None,
-        head=with_light_mode_head(script or None),
+        head=with_light_mode_head(scripts or None),
     ) as app:
         hdr = gr.HTML()
 
@@ -213,6 +217,12 @@ def make_unsorted_files_app() -> gr.Blocks:
                             variant="secondary",
                             elem_id="unsorted-push-btn",
                         )
+                        tag_file_btn = gr.Button(
+                            "Add tags",
+                            variant="secondary",
+                            elem_id="unsorted-tags-btn",
+                            visible=False,
+                        )
                         create_source_link = gr.HTML("", elem_id="unsorted-create-source-link")
                         useless_btn = gr.Button("Useless (0)", variant="secondary", elem_id="unsorted-useless-btn")
 
@@ -238,6 +248,26 @@ def make_unsorted_files_app() -> gr.Blocks:
                 push_confirm_btn = gr.Button("Submit proposal", variant="primary")
                 push_cancel_btn = gr.Button("Cancel", variant="secondary")
 
+        with gr.Column(elem_id="unsorted-tags-modal", visible=False) as tags_modal:
+            gr.Markdown("### Add tags")
+            tags_status = gr.Markdown(value="", visible=False, elem_id="unsorted-tags-status")
+            tags_input = gr.Textbox(
+                value="",
+                visible=False,
+                interactive=True,
+                elem_id="unsorted-tags-input",
+            )
+            tags_editor = gr.HTML(value="", elem_id="unsorted-tags-editor-shell")
+            tags_note = gr.Textbox(
+                label="Optional note",
+                placeholder="Reason or context for this tag proposal...",
+                lines=2,
+                elem_id="unsorted-tags-note",
+            )
+            with gr.Row(elem_id="unsorted-tags-actions"):
+                tags_confirm_btn = gr.Button("Submit proposal", variant="primary")
+                tags_cancel_btn = gr.Button("Cancel", variant="secondary")
+
         app.load(timed_page_load("/unsorted-files", _header_unsorted_files), outputs=[hdr])
 
         app.load(
@@ -261,6 +291,7 @@ def make_unsorted_files_app() -> gr.Blocks:
                 next_btn,
                 too_redacted_btn,
                 push_to_source_btn,
+                tag_file_btn,
                 useless_btn,
                 create_source_link,
                 action_status,
@@ -268,6 +299,11 @@ def make_unsorted_files_app() -> gr.Blocks:
                 push_status,
                 push_source_dropdown,
                 push_note,
+                tags_modal,
+                tags_status,
+                tags_input,
+                tags_editor,
+                tags_note,
             ],
         )
 
@@ -396,6 +432,52 @@ def make_unsorted_files_app() -> gr.Blocks:
                 push_status,
                 push_source_dropdown,
                 push_note,
+                files_state,
+                current_index_state,
+                current_file_id_state,
+                explorer_view_html,
+                review_shell,
+                file_preview_html,
+                file_meta_html,
+                file_counter,
+                current_action_md,
+                prev_btn,
+                next_btn,
+                too_redacted_btn,
+                push_to_source_btn,
+                useless_btn,
+                create_source_link,
+            ],
+            show_progress=False,
+        )
+
+        tag_file_btn.click(
+            timed_page_load("/unsorted-files", _open_unsorted_tags_modal, label="open_unsorted_tags_modal"),
+            inputs=[current_file_id_state],
+            outputs=[tags_modal, tags_status, tags_input, tags_editor, tags_note],
+            show_progress=False,
+        )
+
+        tags_cancel_btn.click(
+            _cancel_unsorted_tags_modal,
+            outputs=[tags_modal, tags_status, tags_input, tags_editor, tags_note],
+            show_progress=False,
+        )
+
+        tags_confirm_btn.click(
+            timed_page_load(
+                "/unsorted-files",
+                _submit_unsorted_tags_proposal,
+                label="submit_unsorted_tags_proposal",
+            ),
+            inputs=[current_file_id_state, tags_input, tags_note, current_index_state],
+            outputs=[
+                action_status,
+                tags_modal,
+                tags_status,
+                tags_input,
+                tags_editor,
+                tags_note,
                 files_state,
                 current_index_state,
                 current_file_id_state,

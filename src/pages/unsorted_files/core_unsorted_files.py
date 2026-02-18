@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import mimetypes
 import os
@@ -55,6 +56,49 @@ SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 _DB_INIT_LOCK = threading.Lock()
 _DB_INIT_DONE = False
+
+
+def _normalize_tag(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _parse_tags_input(raw_value: object) -> List[str]:
+    tags: List[str] = []
+    seen: set[str] = set()
+    for chunk in re.split(r"[,\n]+", str(raw_value or "")):
+        normalized = _normalize_tag(chunk)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tags.append(normalized)
+    return tags
+
+
+def _decode_tags_json(raw_value: object) -> List[str]:
+    if isinstance(raw_value, list):
+        candidates = raw_value
+    else:
+        text_value = str(raw_value or "").strip()
+        if not text_value:
+            return []
+        try:
+            parsed = json.loads(text_value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            candidates = parsed
+        else:
+            return _parse_tags_input(text_value)
+
+    tags: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_tag(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tags.append(normalized)
+    return tags
 
 
 def _is_truthy(value: object) -> bool:
@@ -377,6 +421,45 @@ def _ensure_unsorted_db_once() -> None:
             )
         )
 
+        session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS app.unsorted_file_tag_proposals (
+                    id BIGSERIAL PRIMARY KEY,
+                    unsorted_file_id BIGINT NOT NULL REFERENCES app.unsorted_files(id) ON DELETE CASCADE,
+                    proposer_user_id BIGINT NOT NULL REFERENCES app."user"(id) ON UPDATE CASCADE ON DELETE CASCADE,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    note TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    reviewed_at TIMESTAMPTZ,
+                    reviewer_user_id BIGINT REFERENCES app."user"(id) ON UPDATE CASCADE ON DELETE SET NULL,
+                    review_note TEXT,
+                    CONSTRAINT chk_unsorted_tag_status CHECK (
+                        lower(status) IN ('pending', 'accepted', 'declined')
+                    ),
+                    UNIQUE (unsorted_file_id, proposer_user_id)
+                )
+                """
+            )
+        )
+
+        session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS app.unsorted_file_tag_proposal_tags (
+                    proposal_id BIGINT NOT NULL REFERENCES app.unsorted_file_tag_proposals(id) ON DELETE CASCADE,
+                    tag_code TEXT NOT NULL,
+                    tag_label TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT pk_unsorted_file_tag_proposal_tags PRIMARY KEY (proposal_id, tag_code),
+                    CONSTRAINT chk_unsorted_file_tag_proposal_tag_code CHECK (btrim(tag_code) <> ''),
+                    CONSTRAINT chk_unsorted_file_tag_proposal_tag_label CHECK (btrim(tag_label) <> '')
+                )
+                """
+            )
+        )
+
         session.execute(text("CREATE INDEX IF NOT EXISTS idx_unsorted_files_created_at ON app.unsorted_files(created_at)"))
         session.execute(
             text("CREATE INDEX IF NOT EXISTS idx_unsorted_files_uploaded_by ON app.unsorted_files(uploaded_by_user_id)")
@@ -394,6 +477,30 @@ def _ensure_unsorted_db_once() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_unsorted_push_proposals_file_source "
                 "ON app.unsorted_file_push_proposals(unsorted_file_id, source_id)"
+            )
+        )
+        session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposals_file_status "
+                "ON app.unsorted_file_tag_proposals(unsorted_file_id, status)"
+            )
+        )
+        session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposals_proposer_file "
+                "ON app.unsorted_file_tag_proposals(proposer_user_id, unsorted_file_id)"
+            )
+        )
+        session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_proposal "
+                "ON app.unsorted_file_tag_proposal_tags(proposal_id)"
+            )
+        )
+        session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_code "
+                "ON app.unsorted_file_tag_proposal_tags(tag_code)"
             )
         )
 
@@ -442,6 +549,109 @@ def _fetch_source_choices() -> List[Tuple[str, str]]:
     return choices
 
 
+def _fetch_source_tag_catalog() -> List[str]:
+    _ensure_unsorted_db()
+
+    with readonly_session_scope() as session:
+        if not _table_exists_in_app_schema(session, "sources_tags"):
+            return []
+        rows = session.execute(
+            text(
+                """
+                SELECT label
+                FROM app.sources_tags
+                ORDER BY lower(label), id
+                """
+            )
+        ).scalars().all()
+
+    catalog: List[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        normalized = _normalize_tag(row)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        catalog.append(normalized)
+    return catalog
+
+
+def _render_unsorted_tags_editor_markup(tag_catalog: Sequence[str]) -> str:
+    normalized_catalog: List[str] = []
+    seen: set[str] = set()
+    for raw_tag in tag_catalog:
+        normalized = _normalize_tag(raw_tag)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_catalog.append(normalized)
+
+    tag_catalog_json = html.escape(json.dumps(normalized_catalog, ensure_ascii=True), quote=True)
+    return (
+        "<section id='unsorted-tags-editor' class='unsorted-tags-editor' "
+        f"data-tag-catalog='{tag_catalog_json}'>"
+        "<span class='unsorted-tags-editor__label'>Tags</span>"
+        "<div class='person-detail-card__tags person-detail-card__tags--editing' aria-live='polite'></div>"
+        "</section>"
+    )
+
+
+def _fetch_latest_unsorted_tag_proposal(actor_user_id: int, unsorted_file_id: int) -> Tuple[List[str], str, str]:
+    normalized_actor_id = int(max(0, actor_user_id))
+    normalized_file_id = _coerce_file_id(unsorted_file_id)
+    if normalized_actor_id <= 0 or normalized_file_id <= 0:
+        return [], "", ""
+
+    _ensure_unsorted_db()
+    with readonly_session_scope() as session:
+        if not _table_exists_in_app_schema(session, "unsorted_file_tag_proposals"):
+            return [], "", ""
+        has_tag_rows = _table_exists_in_app_schema(session, "unsorted_file_tag_proposal_tags")
+        tags_select = (
+            """
+                    COALESCE(
+                        (
+                            SELECT json_agg(utpt.tag_label ORDER BY lower(utpt.tag_label), utpt.tag_label)
+                            FROM app.unsorted_file_tag_proposal_tags utpt
+                            WHERE utpt.proposal_id = utp.id
+                        ),
+                        '[]'::json
+                    )::text AS tags_json,
+            """
+            if has_tag_rows
+            else "COALESCE(utp.tags_json, '[]') AS tags_json,"
+        )
+        row = session.execute(
+            text(
+                """
+                SELECT
+                    """
+                + tags_select
+                + """
+                    COALESCE(utp.note, '') AS note,
+                    COALESCE(utp.status, '') AS status
+                FROM app.unsorted_file_tag_proposals utp
+                WHERE utp.unsorted_file_id = :unsorted_file_id
+                  AND utp.proposer_user_id = :proposer_user_id
+                ORDER BY utp.created_at DESC, utp.id DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "unsorted_file_id": normalized_file_id,
+                "proposer_user_id": normalized_actor_id,
+            },
+        ).mappings().one_or_none()
+
+    if row is None:
+        return [], "", ""
+    return (
+        _decode_tags_json(row.get("tags_json")),
+        str(row.get("note") or "").strip(),
+        str(row.get("status") or "").strip().lower(),
+    )
+
+
 def _fetch_unsorted_files(actor_user_id: int) -> List[Dict[str, object]]:
     _ensure_unsorted_db()
 
@@ -449,9 +659,51 @@ def _fetch_unsorted_files(actor_user_id: int) -> List[Dict[str, object]]:
         if not _table_exists_in_app_schema(session, "unsorted_files"):
             return []
 
+        has_tag_proposals = _table_exists_in_app_schema(session, "unsorted_file_tag_proposals")
+        has_tag_proposal_tags = _table_exists_in_app_schema(session, "unsorted_file_tag_proposal_tags")
+        tag_json_select = (
+            """
+                    COALESCE(
+                        (
+                            SELECT json_agg(utpt.tag_label ORDER BY lower(utpt.tag_label), utpt.tag_label)
+                            FROM app.unsorted_file_tag_proposal_tags utpt
+                            WHERE utpt.proposal_id = utp.id
+                        ),
+                        '[]'::json
+                    )::text AS tags_json,
+            """
+            if has_tag_proposal_tags
+            else "COALESCE(utp.tags_json, '[]') AS tags_json,"
+        )
+        user_tag_proposal_cte = (
+            """
+            user_tag_proposal AS (
+                SELECT DISTINCT ON (utp.unsorted_file_id)
+                    utp.unsorted_file_id,
+                    """
+            + tag_json_select
+            + """
+                    COALESCE(utp.status, '') AS status
+                FROM app.unsorted_file_tag_proposals utp
+                WHERE utp.proposer_user_id = :actor_user_id
+                ORDER BY utp.unsorted_file_id, utp.created_at DESC, utp.id DESC
+            )
+            """
+            if has_tag_proposals
+            else """
+            user_tag_proposal AS (
+                SELECT
+                    NULL::bigint AS unsorted_file_id,
+                    '[]'::text AS tags_json,
+                    ''::text AS status
+                WHERE FALSE
+            )
+            """
+        )
+
         rows = session.execute(
             text(
-                """
+                f"""
                 WITH
                 useless_counts AS (
                     SELECT
@@ -470,7 +722,8 @@ def _fetch_unsorted_files(actor_user_id: int) -> List[Dict[str, object]]:
                     FROM app.unsorted_file_actions ufa
                     WHERE ufa.actor_user_id = :actor_user_id
                     ORDER BY ufa.unsorted_file_id, ufa.updated_at DESC, ufa.id DESC
-                )
+                ),
+                {user_tag_proposal_cte}
                 SELECT
                     uf.id,
                     uf.bucket,
@@ -483,12 +736,16 @@ def _fetch_unsorted_files(actor_user_id: int) -> List[Dict[str, object]]:
                     uf.created_at,
                     COALESCE(uc.useless_count, 0)::bigint AS useless_count,
                     COALESCE(ua.action_type, '') AS user_action,
-                    COALESCE(ua.source_slug, '') AS user_source_slug
+                    COALESCE(ua.source_slug, '') AS user_source_slug,
+                    COALESCE(utp.tags_json, '[]') AS user_tag_proposal_tags_json,
+                    COALESCE(utp.status, '') AS user_tag_proposal_status
                 FROM app.unsorted_files uf
                 LEFT JOIN useless_counts uc
                     ON uc.unsorted_file_id = uf.id
                 LEFT JOIN user_action ua
                     ON ua.unsorted_file_id = uf.id
+                LEFT JOIN user_tag_proposal utp
+                    ON utp.unsorted_file_id = uf.id
                 ORDER BY uf.created_at DESC, uf.id DESC
                 """
             ),
@@ -517,6 +774,8 @@ def _fetch_unsorted_files(actor_user_id: int) -> List[Dict[str, object]]:
                 "useless_count": int(row.get("useless_count") or 0),
                 "user_action": _normalize_action(row.get("user_action")),
                 "user_source_slug": str(row.get("user_source_slug") or "").strip().lower(),
+                "user_tag_proposal_tags": _decode_tags_json(row.get("user_tag_proposal_tags_json")),
+                "user_tag_proposal_status": str(row.get("user_tag_proposal_status") or "").strip().lower(),
             }
         )
 
@@ -661,11 +920,20 @@ def _render_unsorted_file_preview(file_row: Dict[str, object] | None) -> str:
     file_name = str(file_row.get("file_name") or "file").strip() or "file"
     media_url = str(file_row.get("media_url") or "").strip()
     mime_type = str(file_row.get("mime_type") or "").strip()
+    safe_media_url = html.escape(media_url, quote=True)
     preview_markup = _render_media_preview(media_url, mime_type, file_name)
     preview_class = "unsorted-preview-card"
     if _is_pdf_mime(_resolve_mime_type(mime_type, file_name, media_url)):
         preview_class += " unsorted-preview-card--pdf"
-    return f"<section class='{preview_class}'>{preview_markup}</section>"
+    return (
+        f"<section class='unsorted-preview-wrap' data-unsorted-media-url='{safe_media_url}'>"
+        "<a href='#' class='unsorted-preview-fullscreen' role='button' "
+        "title='Toggle full screen preview' aria-label='Toggle full screen preview' aria-pressed='false'>"
+        "Full screen"
+        "</a>"
+        f"<section class='{preview_class}'>{preview_markup}</section>"
+        "</section>"
+    )
 
 
 def _render_unsorted_file_meta(file_row: Dict[str, object] | None) -> str:
@@ -681,12 +949,24 @@ def _render_unsorted_file_meta(file_row: Dict[str, object] | None) -> str:
     created_label = _unsorted_uploaded_label(created_at)
     type_label = _unsorted_type_label(mime_type, file_name)
     size_label = _format_bytes(size_bytes)
+    proposal_tags = [
+        _normalize_tag(tag)
+        for tag in (file_row.get("user_tag_proposal_tags") or [])
+        if _normalize_tag(tag)
+    ]
+    proposal_status = str(file_row.get("user_tag_proposal_status") or "").strip().lower()
+    proposal_label = "-"
+    if proposal_tags:
+        proposal_label = ", ".join(proposal_tags)
+        if proposal_status:
+            proposal_label = f"{proposal_label} ({proposal_status})"
 
     return (
         "<section class='unsorted-file-meta'>"
         f"<h3>{html.escape(file_name)}</h3>"
         f"<p><strong>Origin/Description:</strong> {_render_origin_value(origin_text)}</p>"
         f"<p><strong>Type:</strong> {html.escape(type_label)} | <strong>Size:</strong> {html.escape(size_label)}</p>"
+        f"<p><strong>Your tag proposal:</strong> {html.escape(proposal_label)}</p>"
         f"<p><strong>Uploaded:</strong> {html.escape(created_label or '-')}</p>"
         "<p><a class='source-table__link' href='/unsorted-files/'>Back to files</a></p>"
         f"<p><a class='source-table__link' href='{html.escape(media_url, quote=True)}' target='_blank' rel='noopener'>Open file in new tab</a></p>"
@@ -699,15 +979,27 @@ def _action_summary_markup(file_row: Dict[str, object] | None) -> str:
         return ""
 
     user_action = _normalize_action(file_row.get("user_action"))
-    if not user_action:
-        return ""
+    lines: List[str] = []
+    if user_action:
+        label = _ACTION_LABELS.get(user_action, user_action.replace("_", " ").title())
+        if user_action == ACTION_PUSH_TO_SOURCE:
+            source_slug = str(file_row.get("user_source_slug") or "").strip()
+            if source_slug:
+                label = f"{label} (`{source_slug}`)"
+        lines.append(f"Your current choice: **{label}**")
 
-    label = _ACTION_LABELS.get(user_action, user_action.replace("_", " ").title())
-    if user_action == ACTION_PUSH_TO_SOURCE:
-        source_slug = str(file_row.get("user_source_slug") or "").strip()
-        if source_slug:
-            label = f"{label} (`{source_slug}`)"
-    return f"Your current choice: **{label}**"
+    proposed_tags = [
+        _normalize_tag(tag)
+        for tag in (file_row.get("user_tag_proposal_tags") or [])
+        if _normalize_tag(tag)
+    ]
+    proposal_status = str(file_row.get("user_tag_proposal_status") or "").strip().lower()
+    if proposed_tags:
+        tags_text = ", ".join(f"`{tag}`" for tag in proposed_tags)
+        status_suffix = f" ({proposal_status})" if proposal_status else ""
+        lines.append(f"Your tag proposal{status_suffix}: {tags_text}")
+
+    return "  \n".join(lines)
 
 
 def _find_index_by_file_id(files: Sequence[Dict[str, object]], file_id: int, fallback_index: int) -> int:
@@ -940,7 +1232,7 @@ def _load_unsorted_files_page(request: gr.Request):
     return (
         bool(can_submit),
         bool(is_admin),
-        gr.update(visible=bool(is_admin)),
+        gr.update(visible=False),
         gr.update(visible=False),
         gr.update(value="", visible=False),
         files,
@@ -956,12 +1248,18 @@ def _load_unsorted_files_page(request: gr.Request):
         next_update,
         too_redacted_update,
         push_update,
+        gr.update(interactive=bool(can_submit and resolved_file_id > 0)),
         useless_update,
         create_source_update,
         gr.update(value=status_message, visible=bool(status_message)),
         gr.update(visible=False),
         gr.update(value="", visible=False),
         gr.update(choices=[], value=None, interactive=False),
+        gr.update(value=""),
+        gr.update(visible=False),
+        gr.update(value="", visible=False),
+        gr.update(value=""),
+        gr.update(value=_render_unsorted_tags_editor_markup(_fetch_source_tag_catalog())),
         gr.update(value=""),
     )
 
@@ -1188,6 +1486,253 @@ def _cancel_unsorted_push_modal():
         gr.update(value="", visible=False),
         gr.update(choices=[], value=None, interactive=False),
         gr.update(value=""),
+    )
+
+
+def _open_unsorted_tags_modal(current_file_id: int, request: gr.Request):
+    normalized_file_id = _coerce_file_id(current_file_id)
+    tag_catalog = _fetch_source_tag_catalog()
+    editor_markup = _render_unsorted_tags_editor_markup(tag_catalog)
+
+    user, can_submit, _is_admin = _role_flags_from_request(request)
+    if not user:
+        return (
+            gr.update(visible=False),
+            gr.update(value="You must sign in to submit a tag proposal.", visible=True),
+            gr.update(value=""),
+            gr.update(value=editor_markup),
+            gr.update(value=""),
+        )
+    if not can_submit:
+        return (
+            gr.update(visible=False),
+            gr.update(value="Your `base_user` privilege is disabled.", visible=True),
+            gr.update(value=""),
+            gr.update(value=editor_markup),
+            gr.update(value=""),
+        )
+    if normalized_file_id <= 0:
+        return (
+            gr.update(visible=False),
+            gr.update(value="Select a file first.", visible=True),
+            gr.update(value=""),
+            gr.update(value=editor_markup),
+            gr.update(value=""),
+        )
+
+    actor_user_id = _resolve_request_user_id(user)
+    proposed_tags: List[str] = []
+    proposal_note = ""
+    proposal_status = ""
+    if actor_user_id > 0:
+        proposed_tags, proposal_note, proposal_status = _fetch_latest_unsorted_tag_proposal(actor_user_id, normalized_file_id)
+
+    status_message = ""
+    if proposal_status == "pending":
+        status_message = "Latest tag proposal is pending review."
+    elif proposal_status == "accepted":
+        status_message = "Latest tag proposal was accepted."
+    elif proposal_status == "declined":
+        status_message = "Latest tag proposal was declined."
+
+    return (
+        gr.update(visible=True),
+        gr.update(value=status_message, visible=bool(status_message)),
+        gr.update(value=", ".join(proposed_tags)),
+        gr.update(value=editor_markup),
+        gr.update(value=proposal_note),
+    )
+
+
+def _cancel_unsorted_tags_modal():
+    return (
+        gr.update(visible=False),
+        gr.update(value="", visible=False),
+        gr.update(value=""),
+        gr.update(value=_render_unsorted_tags_editor_markup(_fetch_source_tag_catalog())),
+        gr.update(value=""),
+    )
+
+
+def _submit_unsorted_tags_proposal(
+    current_file_id: int,
+    proposed_tags: str,
+    proposal_note: str,
+    current_index: int,
+    request: gr.Request,
+):
+    normalized_file_id = _coerce_file_id(current_file_id)
+    parsed_tags = _parse_tags_input(proposed_tags)
+    proposal_id = 0
+
+    try:
+        user, can_submit, _is_admin = _role_flags_from_request(request)
+        if not user:
+            raise ValueError("You must be logged in to submit tag proposals.")
+        if not can_submit:
+            raise ValueError("Your `base_user` privilege is disabled. Ask a creator to restore access.")
+        if normalized_file_id <= 0:
+            raise ValueError("Select a file first.")
+        if not parsed_tags:
+            raise ValueError("Add at least one tag before submitting.")
+
+        with session_scope() as session:
+            _ensure_unsorted_db()
+            actor_user_id = _resolve_or_create_actor_user_id(session, user)
+            if actor_user_id <= 0:
+                raise ValueError("Could not resolve your user id.")
+
+            file_exists = session.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM app.unsorted_files uf
+                        WHERE uf.id = :file_id
+                    )
+                    """
+                ),
+                {"file_id": normalized_file_id},
+            ).scalar_one()
+            if not file_exists:
+                raise ValueError("Selected unsorted file was not found.")
+
+            proposal_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO app.unsorted_file_tag_proposals (
+                            unsorted_file_id,
+                            proposer_user_id,
+                            tags_json,
+                            note,
+                            status
+                        )
+                        VALUES (
+                            :unsorted_file_id,
+                            :proposer_user_id,
+                            :tags_json,
+                            :note,
+                            'pending'
+                        )
+                        ON CONFLICT (unsorted_file_id, proposer_user_id) DO UPDATE
+                        SET tags_json = EXCLUDED.tags_json,
+                            note = EXCLUDED.note,
+                            status = 'pending',
+                            created_at = now(),
+                            reviewed_at = NULL,
+                            reviewer_user_id = NULL,
+                            review_note = NULL
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "unsorted_file_id": normalized_file_id,
+                        "proposer_user_id": actor_user_id,
+                        "tags_json": json.dumps(parsed_tags, ensure_ascii=True),
+                        "note": str(proposal_note or "").strip(),
+                    },
+                ).scalar_one()
+            )
+
+            if _table_exists_in_app_schema(session, "unsorted_file_tag_proposal_tags"):
+                session.execute(
+                    text(
+                        """
+                        DELETE FROM app.unsorted_file_tag_proposal_tags
+                        WHERE proposal_id = :proposal_id
+                        """
+                    ),
+                    {"proposal_id": proposal_id},
+                )
+                if parsed_tags:
+                    session.execute(
+                        text(
+                            """
+                            INSERT INTO app.unsorted_file_tag_proposal_tags (
+                                proposal_id,
+                                tag_code,
+                                tag_label
+                            )
+                            VALUES (
+                                :proposal_id,
+                                :tag_code,
+                                :tag_label
+                            )
+                            ON CONFLICT (proposal_id, tag_code) DO UPDATE
+                            SET tag_label = EXCLUDED.tag_label
+                            """
+                        ),
+                        [
+                            {
+                                "proposal_id": proposal_id,
+                                "tag_code": tag_value,
+                                "tag_label": tag_value,
+                            }
+                            for tag_value in parsed_tags
+                        ],
+                    )
+
+        status_message = f"✅ Tag proposal #{proposal_id} submitted with {len(parsed_tags)} tag(s)."
+        modal_update = gr.update(visible=False)
+        tags_status_update = gr.update(value="", visible=False)
+        tags_input_update = gr.update(value="")
+        tags_note_update = gr.update(value="")
+    except Exception as exc:  # noqa: BLE001
+        status_message = f"❌ Could not submit tag proposal: {exc}"
+        modal_update = gr.update(visible=True)
+        tags_status_update = gr.update(value=str(exc), visible=True)
+        tags_input_update = gr.update()
+        tags_note_update = gr.update()
+
+    user, can_submit, _ = _role_flags_from_request(request)
+    actor_user_id = _resolve_request_user_id(user)
+    (
+        files,
+        resolved_index,
+        resolved_file_id,
+        explorer_update,
+        detail_shell_update,
+        preview_update,
+        meta_update,
+        counter_update,
+        action_summary_update,
+        prev_update,
+        next_update,
+        too_redacted_update,
+        push_update,
+        useless_update,
+        create_source_update,
+    ) = _refresh_files_and_view(
+        actor_user_id,
+        current_file_id=normalized_file_id,
+        fallback_index=int(current_index or 0),
+        can_interact=can_submit,
+        show_detail=True,
+    )
+
+    return (
+        gr.update(value=status_message, visible=True),
+        modal_update,
+        tags_status_update,
+        tags_input_update,
+        gr.update(value=_render_unsorted_tags_editor_markup(_fetch_source_tag_catalog())),
+        tags_note_update,
+        files,
+        resolved_index,
+        resolved_file_id,
+        explorer_update,
+        detail_shell_update,
+        preview_update,
+        meta_update,
+        counter_update,
+        action_summary_update,
+        prev_update,
+        next_update,
+        too_redacted_update,
+        push_update,
+        useless_update,
+        create_source_update,
     )
 
 

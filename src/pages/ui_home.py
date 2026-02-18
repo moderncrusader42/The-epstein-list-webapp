@@ -1,4 +1,5 @@
 import gradio as gr
+from html import escape
 
 from src.pages.header import render_header, with_light_mode_head
 from src.css.utils import load_css
@@ -13,7 +14,82 @@ def _header_home(request: gr.Request):
 def _welcome_text(request: gr.Request) -> str:
     user = get_user(request) or {}
     name = user.get("name") or user.get("email") or "user"
-    return f"<h2>Welcome, {name}!</h2>"
+    safe_name = escape(str(name))
+    return (
+        "<section class='home-hero'>"
+        "<p class='home-hero__eyebrow'>Home guide</p>"
+        f"<h1 class='home-hero__title'>Welcome, {safe_name}</h1>"
+        "<p class='home-hero__lead'>"
+        "This page explains how people records, evidence, theories, and proposal permissions work."
+        "</p>"
+        "<div class='home-hero__chips'>"
+        "<span class='home-chip'>People index</span>"
+        "<span class='home-chip'>Evidence sources</span>"
+        "<span class='home-chip'>Proposal review flow</span>"
+        "</div>"
+        "</section>"
+    )
+
+
+def _home_guide_text() -> str:
+    return (
+        "<section class='home-guide'>"
+        "<article class='home-card'>"
+        "<h3><span class='home-card__index'>1</span>The List</h3>"
+        "<p>"
+        "The List tracks every person who appears in the files, whether they are guilty or not."
+        "</p>"
+        "<p class='home-card__note'>"
+        "Soon there will be a toggle to show guilty entries first, with non-guilty entries available on demand."
+        "</p>"
+        "</article>"
+        "<article class='home-card'>"
+        "<h3><span class='home-card__index'>2</span>Sources</h3>"
+        "<p>"
+        "The Sources page organizes evidence used to explain what people in The List did, or what happened to them."
+        "</p>"
+        "<p class='home-card__note'>"
+        "A source can be simple (for example, &quot;Michael knew him&quot; with photos) or more complex with markdown explanations."
+        "</p>"
+        "</article>"
+        "<article class='home-card'>"
+        "<h3><span class='home-card__index'>3</span>Unsorted Files</h3>"
+        "<p>"
+        "Reliable official files are expected to appear in Unsorted Files first."
+        "</p>"
+        "<p class='home-card__note'>"
+        "From there, they can be reviewed and turned into Sources."
+        "</p>"
+        "</article>"
+        "<article class='home-card'>"
+        "<h3><span class='home-card__index'>4</span>Theories</h3>"
+        "<p>"
+        "Theories are separate from The List but can be referenced from people entries."
+        "</p>"
+        "<p class='home-card__note'>"
+        "Example: a theory that someone was switched out, with comparison images and a markdown explanation."
+        "</p>"
+        "</article>"
+        "<article class='home-card home-card--wide'>"
+        "<h3><span class='home-card__index'>5</span>Permissions and Review Flow</h3>"
+        "<ul class='home-role-list'>"
+        "<li><strong>User:</strong> can submit proposals.</li>"
+        "<li><strong>Reviewer:</strong> can accept or decline proposals.</li>"
+        "<li><strong>Editor:</strong> trusted contributor who can bypass reviewer approval for their own edits.</li>"
+        "<li><strong>Admin:</strong> manages access and oversight.</li>"
+        "</ul>"
+        "<p class='home-card__note'>"
+        "All proposal edits and decisions are traceable, so you can see who submitted, edited, and accepted each change."
+        "</p>"
+        "</article>"
+        "</section>"
+        "<section class='home-callout'>"
+        "<h4>Contributors welcome</h4>"
+        "<p>"
+        "We are actively looking for people right now, so role assignments are currently being handled with flexibility."
+        "</p>"
+        "</section>"
+    )
 
 
 def make_home_app() -> gr.Blocks:
@@ -27,28 +103,7 @@ def make_home_app() -> gr.Blocks:
 
         with gr.Column(elem_id="home-shell"):
             hero = gr.HTML()
-            gr.Markdown(
-                """
-                ### How This Website Works
-
-                1. **The List**
-                The List tracks every person who appears in the files, whether they are guilty or not. Soon there will be a toggle to show only guilty people by default, with non-guilty entries available on demand.
-
-                2. **Sources**
-                The Sources page organizes evidence used to explain what people in The List did or what happened to them. A source can be simple (for example, "Michael knew him" with photos together) or more complex using markdown explanations.
-
-                3. **Unsorted Files**
-                Reliable official files are expected to appear in Unsorted Files first. From there, they can be reviewed and turned into Sources.
-
-                4. **Theories**
-                Theories are separate from The List but can be referenced from people entries. Example: a theory that someone was switched out, with comparison images and markdown explanation.
-
-                5. **Permissions and Review Flow**
-                Any signed-in user can submit proposals. Reviewers can accept or decline proposals. Trusted contributors can become Editors and bypass reviewer approval for their own edits, and can later become Reviewers. Admin permissions manage access and oversight. All proposal edits and decisions are traceable, so you can see who submitted, edited, and accepted each change.
-
-                We are actively looking for contributors right now, so role assignments are currently being handled with flexibility.
-                """
-            )
+            gr.HTML(_home_guide_text())
 
         home_app.load(timed_page_load("/app", _header_home), outputs=[hdr])
         home_app.load(timed_page_load("/app", _welcome_text), outputs=[hero])
