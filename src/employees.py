@@ -86,13 +86,13 @@ def ensure_user(
             """
         )
     )
-    # Every newly registered account starts with base_user access so proposals can be submitted.
-    # Keep existing records unchanged (e.g. if a creator removed base_user later on purpose).
+    # Every newly registered account starts with base_user + editor access.
+    # Keep existing records unchanged (e.g. if a creator removed privileges later on purpose).
     session.execute(
         text(
             """
-            INSERT INTO app.user_privileges (email, base_user)
-            VALUES (:email, TRUE)
+            INSERT INTO app.user_privileges (email, base_user, editor)
+            VALUES (:email, TRUE, TRUE)
             ON CONFLICT (email) DO NOTHING
             """
         ),
