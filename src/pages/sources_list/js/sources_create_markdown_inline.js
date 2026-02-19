@@ -747,7 +747,7 @@
     });
 
     previewEditor.addEventListener("blur", () => {
-      scheduleCompileSync({ immediate: true });
+      scheduleCompileSync({ immediate: false });
     });
 
     previewEditor.addEventListener("paste", (event) => {

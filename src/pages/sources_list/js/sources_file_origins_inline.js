@@ -476,13 +476,30 @@
   const bindAddButton = (button, root, target) => {
     if (button.dataset.sourcesOriginsAddBound === "1") return;
     button.dataset.sourcesOriginsAddBound = "1";
-    button.addEventListener("click", (event) => {
+    let swallowNextClick = false;
+
+    const activate = (event) => {
       event.preventDefault();
       if (activeAddMenu) {
         closeAddMenu();
         return;
       }
       openAddMenu(button, root, target);
+    };
+
+    button.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      activate(event);
+    });
+
+    button.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        return;
+      }
+      activate(event);
     });
   };
 

@@ -2,6 +2,8 @@
   if (typeof window === "undefined") return;
 
   const DROPDOWN_ID = "people-tag-filter";
+  const CREATE_TRIGGER_ID = "the-list-create-profile-trigger";
+  const CREATE_PAGE_PATH = "/people-create/";
   const ALL_VALUE = "all";
   const PLACEHOLDER = "Filter by tags";
 
@@ -536,8 +538,60 @@
     host.dataset.peopleTagDropdownBound = "1";
   };
 
+  const bindCreateTrigger = () => {
+    const root = ensureRoot();
+    if (!root) return;
+    const host = root.querySelector(`#${CREATE_TRIGGER_ID}`) || document.getElementById(CREATE_TRIGGER_ID);
+    if (!(host instanceof HTMLElement) || host.dataset.peopleCreateTriggerBound === "1") return;
+
+    const activate = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.location.assign(CREATE_PAGE_PATH);
+    };
+
+    let swallowNextClick = false;
+    host.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      activate(event);
+    });
+    host.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      activate(event);
+    });
+    host.dataset.peopleCreateTriggerBound = "1";
+
+    const nestedButton = host.querySelector("button");
+    if (!(nestedButton instanceof HTMLButtonElement) || nestedButton.dataset.peopleCreateTriggerBound === "1") {
+      return;
+    }
+    let swallowNestedClick = false;
+    nestedButton.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNestedClick = true;
+      activate(event);
+    });
+    nestedButton.addEventListener("click", (event) => {
+      if (swallowNestedClick) {
+        swallowNestedClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      activate(event);
+    });
+    nestedButton.dataset.peopleCreateTriggerBound = "1";
+  };
+
   const bootstrap = () => {
     bindDropdown();
+    bindCreateTrigger();
   };
 
   if (document.readyState === "loading") {

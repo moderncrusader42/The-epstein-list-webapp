@@ -343,7 +343,9 @@
     button.textContent = "+";
     button.title = "Add tag";
     button.setAttribute("aria-label", "Add tag");
-    button.addEventListener("click", (event) => {
+    let swallowNextClick = false;
+
+    const activate = (event) => {
       event.preventDefault();
       const existingEditor = chipsHost.querySelector(`.${ADD_EDITOR_CLASS}`);
       if (existingEditor instanceof HTMLElement) {
@@ -358,6 +360,21 @@
       chipsHost.insertBefore(addEditor, button);
       const addInput = addEditor.querySelector("input");
       if (addInput instanceof HTMLInputElement) addInput.focus();
+    };
+
+    button.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      activate(event);
+    });
+
+    button.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        return;
+      }
+      activate(event);
     });
     return button;
   };

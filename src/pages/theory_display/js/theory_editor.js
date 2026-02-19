@@ -53,6 +53,9 @@
   const IMAGE_RESIZE_MIN_WIDTH = 56;
   const IMAGE_RESIZE_MAX_MULTIPLIER = 3;
   const TAG_SUGGESTION_LIMIT = 8;
+  const COMPILED_PREVIEW_DEBOUNCE_MS = 1000;
+  const COMPILED_PREVIEW_RESTORE_RETRY_MAX = 16;
+  const COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS = 50;
 
   const boundEditors = new WeakSet();
   const boundStatusNodes = new WeakSet();
@@ -79,6 +82,8 @@
   let citationTooltipNode = null;
   let citationTooltipAnchor = null;
   let citationTooltipGlobalBound = false;
+  let compiledPreviewSyncTimerId = 0;
+  let lastCompiledPreviewMarkdown = "";
 
   const getCropDebugStore = () => {
     const key = "__theListCropDebugLogs";
@@ -305,7 +310,7 @@
     return mode === "preview" || mode === "compiled";
   };
 
-  const rerenderCompiledPreviewFromRaw = () => {
+  const rerenderCompiledPreviewFromRaw = ({ selectionState = null } = {}) => {
     if (!isCompiledMode()) return;
     const rawInput = resolveModeInput("raw");
     const compiledInput = resolveModeInput("compiled");
@@ -313,6 +318,24 @@
     activateModeInput(rawInput);
     window.setTimeout(() => {
       activateModeInput(compiledInput);
+      if (!selectionState) return;
+      let attempts = 0;
+      const restoreSelection = () => {
+        const editor = getPreviewEditor();
+        if (!(editor instanceof HTMLElement) || !isCompiledMode()) {
+          if (attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
+            attempts += 1;
+            window.setTimeout(restoreSelection, COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS);
+          }
+          return;
+        }
+        const restored = restorePreviewTextSelectionState(editor, selectionState);
+        if (!restored && attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
+          attempts += 1;
+          window.setTimeout(restoreSelection, COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS);
+        }
+      };
+      window.setTimeout(restoreSelection, 0);
     }, 40);
   };
 
@@ -321,6 +344,81 @@
     const computed = window.getComputedStyle(node);
     if (computed.display === "none" || computed.visibility === "hidden") return false;
     return node.getClientRects().length > 0;
+  };
+
+  const getTextOffsetWithin = (root, node, offset) => {
+    if (!(root instanceof HTMLElement) || !(node instanceof Node)) return null;
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      range.setEnd(node, offset);
+      return range.toString().length;
+    } catch (error) {
+      void error;
+      return null;
+    }
+  };
+
+  const capturePreviewTextSelectionState = (editor) => {
+    if (!(editor instanceof HTMLElement)) return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount < 1) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+    const start = getTextOffsetWithin(editor, range.startContainer, range.startOffset);
+    const end = getTextOffsetWithin(editor, range.endContainer, range.endOffset);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return {
+      start: Math.max(0, Number(start)),
+      end: Math.max(0, Number(end)),
+      collapsed: range.collapsed,
+    };
+  };
+
+  const resolveTextOffsetWithin = (root, targetOffset) => {
+    if (!(root instanceof HTMLElement)) return null;
+    const safeTarget = Number.isFinite(targetOffset) ? Math.max(0, Number(targetOffset)) : 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    if (!(current instanceof Text)) {
+      return { node: root, offset: 0 };
+    }
+    let remaining = safeTarget;
+    let lastTextNode = current;
+    while (current instanceof Text) {
+      lastTextNode = current;
+      const textValue = String(current.textContent || "");
+      if (remaining <= textValue.length) {
+        return { node: current, offset: Math.max(0, Math.min(textValue.length, remaining)) };
+      }
+      remaining -= textValue.length;
+      current = walker.nextNode();
+    }
+    return {
+      node: lastTextNode,
+      offset: String(lastTextNode.textContent || "").length,
+    };
+  };
+
+  const restorePreviewTextSelectionState = (editor, state) => {
+    if (!(editor instanceof HTMLElement) || !state) return false;
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const startPosition = resolveTextOffsetWithin(editor, state.start);
+    const endPosition = state.collapsed ? startPosition : resolveTextOffsetWithin(editor, state.end);
+    if (!startPosition || !endPosition) return false;
+    try {
+      editor.focus();
+      const range = document.createRange();
+      range.setStart(startPosition.node, startPosition.offset);
+      range.setEnd(endPosition.node, endPosition.offset);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    } catch (error) {
+      void error;
+      return false;
+    }
   };
 
   const getComponentInput = (componentId) =>
@@ -350,13 +448,17 @@
   const normalizeMarkdownLineEndings = (value) =>
     String(value || "").replace(/\r\n/g, "\n");
 
-  const setRawTextareaValue = (textarea, value) => {
+  const setRawTextareaValue = (textarea, value, { emitEvents = true, forceEmit = false } = {}) => {
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     const nextValue = String(value ?? "");
-    if ((textarea.value || "") === nextValue) return;
-    textarea.value = nextValue;
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    const changed = (textarea.value || "") !== nextValue;
+    if (changed) {
+      textarea.value = nextValue;
+    }
+    if (emitEvents && (changed || forceEmit)) {
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    }
   };
 
   const insertTextAtCursor = (text) => {
@@ -1025,7 +1127,8 @@
     if (!(buttonHost instanceof HTMLElement)) return;
 
     host.dataset.bibBound = "1";
-    buttonHost.addEventListener("click", async (event) => {
+    let swallowNextClick = false;
+    const activate = async (event) => {
       event.preventDefault();
       event.stopPropagation();
 
@@ -1033,7 +1136,7 @@
       if (!(rawTextarea instanceof HTMLTextAreaElement)) return;
 
       if (isCompiledMode()) {
-        syncRawFromPreview();
+        syncRawFromPreview({ emitEvents: false });
       }
       const bibliographyEntry = await requestBibliographyEntry(rawTextarea.value);
       if (!bibliographyEntry) return;
@@ -1041,9 +1144,26 @@
       const nextMarkdown = upsertBibDefinition(rawTextarea.value, bibliographyEntry);
       setRawTextareaValue(rawTextarea, nextMarkdown);
       if (isCompiledMode()) {
-        rerenderCompiledPreviewFromRaw();
+        lastCompiledPreviewMarkdown = "";
+        scheduleCompiledPreviewRerender({ immediate: true, preserveSelection: false });
       }
       showSuccessToast(`Saved \\bib{${bibliographyEntry.key}}.`);
+    };
+
+    buttonHost.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      void activate(event);
+    });
+
+    buttonHost.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      void activate(event);
     });
   };
 
@@ -1054,7 +1174,8 @@
     if (!(buttonHost instanceof HTMLElement)) return;
 
     host.dataset.citeBound = "1";
-    buttonHost.addEventListener("click", async (event) => {
+    let swallowNextClick = false;
+    const activate = async (event) => {
       event.preventDefault();
       event.stopPropagation();
 
@@ -1090,10 +1211,26 @@
       }
 
       if (isCompiledMode()) {
-        syncRawFromPreview();
-        rerenderCompiledPreviewFromRaw();
+        lastCompiledPreviewMarkdown = "";
+        scheduleCompiledPreviewRerender({ immediate: true, preserveSelection: true });
       }
       showSuccessToast(`Inserted ${marker}.`);
+    };
+
+    buttonHost.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      void activate(event);
+    });
+
+    buttonHost.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      void activate(event);
     });
   };
 
@@ -1643,7 +1780,9 @@
     button.textContent = "+";
     button.title = "Add tag";
     button.setAttribute("aria-label", "Add tag");
-    button.addEventListener("click", (event) => {
+    let swallowNextClick = false;
+
+    const activate = (event) => {
       event.preventDefault();
       const existingEditor = host.querySelector(".person-detail-card__tag-add-editor");
       if (existingEditor instanceof HTMLElement) {
@@ -1658,6 +1797,21 @@
       host.insertBefore(editor, button);
       const input = editor.querySelector("input");
       if (input instanceof HTMLInputElement) input.focus();
+    };
+
+    button.addEventListener("pointerdown", (event) => {
+      if ("button" in event && event.button !== 0) return;
+      swallowNextClick = true;
+      activate(event);
+    });
+
+    button.addEventListener("click", (event) => {
+      if (swallowNextClick) {
+        swallowNextClick = false;
+        event.preventDefault();
+        return;
+      }
+      activate(event);
     });
     return button;
   };
@@ -3218,16 +3372,14 @@
       .trim();
   };
 
-  const syncRawFromPreview = () => {
+  const syncRawFromPreview = ({ emitEvents = false, forceEmit = false } = {}) => {
     if (!isCompiledMode()) return;
     const editor = getPreviewEditor();
     const textarea = getRawTextarea();
     if (!editor || !textarea) return;
     const markdown = htmlToMarkdown(editor, textarea.value || "");
-    if ((textarea.value || "") === markdown) return;
-    textarea.value = markdown;
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    setRawTextareaValue(textarea, markdown, { emitEvents, forceEmit });
+    return markdown;
   };
 
   const scheduleSyncRawFromPreview = () => {
@@ -3235,8 +3387,35 @@
     syncScheduled = true;
     window.requestAnimationFrame(() => {
       syncScheduled = false;
-      syncRawFromPreview();
+      syncRawFromPreview({ emitEvents: false });
     });
+  };
+
+  const scheduleCompiledPreviewRerender = ({ immediate = false, preserveSelection = true } = {}) => {
+    if (compiledPreviewSyncTimerId) {
+      window.clearTimeout(compiledPreviewSyncTimerId);
+      compiledPreviewSyncTimerId = 0;
+    }
+    const run = () => {
+      compiledPreviewSyncTimerId = 0;
+      if (!isCompiledMode()) return;
+      const editor = getPreviewEditor();
+      if (!(editor instanceof HTMLElement)) return;
+      const hadFocus =
+        preserveSelection &&
+        document.activeElement instanceof Node &&
+        editor.contains(document.activeElement);
+      const selectionState = hadFocus ? capturePreviewTextSelectionState(editor) : null;
+      const markdown = String(syncRawFromPreview({ emitEvents: false }) || "");
+      if (markdown === lastCompiledPreviewMarkdown) return;
+      lastCompiledPreviewMarkdown = markdown;
+      rerenderCompiledPreviewFromRaw({ selectionState });
+    };
+    if (immediate) {
+      run();
+      return;
+    }
+    compiledPreviewSyncTimerId = window.setTimeout(run, COMPILED_PREVIEW_DEBOUNCE_MS);
   };
 
   const applyPasteAsPlainText = (event) => {
@@ -3260,10 +3439,11 @@
     }
     if (!inserted) return;
     scheduleSyncRawFromPreview();
+    scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: true });
     if (/\\(?:cite|bib)\{[^{}\n]+\}/i.test(transformedText)) {
       window.setTimeout(() => {
-        syncRawFromPreview();
-        rerenderCompiledPreviewFromRaw();
+        lastCompiledPreviewMarkdown = "";
+        scheduleCompiledPreviewRerender({ immediate: true, preserveSelection: true });
       }, 0);
     }
   };
@@ -3328,9 +3508,10 @@
       selection.deleteFromDocument();
     }
     scheduleSyncRawFromPreview();
+    scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: true });
     window.setTimeout(() => {
-      syncRawFromPreview();
-      rerenderCompiledPreviewFromRaw();
+      lastCompiledPreviewMarkdown = "";
+      scheduleCompiledPreviewRerender({ immediate: true, preserveSelection: true });
     }, 0);
   };
 
@@ -3338,9 +3519,14 @@
     const editor = getPreviewEditor();
     if (!editor || boundEditors.has(editor)) return;
     boundEditors.add(editor);
-    editor.addEventListener("input", scheduleSyncRawFromPreview);
+    editor.addEventListener("input", () => {
+      scheduleSyncRawFromPreview();
+      scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: true });
+    });
     editor.addEventListener("input", scheduleImageResizeOverlayPosition);
-    editor.addEventListener("blur", syncRawFromPreview);
+    editor.addEventListener("blur", () => {
+      scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: false });
+    });
     editor.addEventListener("paste", applyPasteAsPlainText);
     editor.addEventListener("copy", handleCompiledClipboardEvent);
     editor.addEventListener("cut", handleCompiledClipboardEvent);
@@ -3777,6 +3963,12 @@
     }
   };
 
+  const refreshCompiledPreviewSnapshot = () => {
+    const rawTextarea = getRawTextarea();
+    if (!(rawTextarea instanceof HTMLTextAreaElement)) return;
+    lastCompiledPreviewMarkdown = String(rawTextarea.value || "");
+  };
+
   const observer = new MutationObserver(() => {
     refreshVisualEditor();
   });
@@ -3793,10 +3985,14 @@
       if (!(target instanceof HTMLElement)) return;
       if (target.closest(`#${MODE_CONTAINER_ID}`)) {
         cropDebugLog("mode.change_event");
-        window.setTimeout(refreshVisualEditor, 0);
+        window.setTimeout(() => {
+          refreshVisualEditor();
+          refreshCompiledPreviewSnapshot();
+        }, 0);
       }
     });
     refreshVisualEditor();
+    refreshCompiledPreviewSnapshot();
   };
 
   if (document.readyState === "loading") {
