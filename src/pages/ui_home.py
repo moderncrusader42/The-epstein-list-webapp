@@ -17,10 +17,14 @@ def _welcome_text(request: gr.Request) -> str:
     safe_name = escape(str(name))
     return (
         "<section class='home-hero'>"
-        "<p class='home-hero__eyebrow'>Home guide</p>"
+        "<p class='home-hero__eyebrow'>Statement of purpose</p>"
         f"<h1 class='home-hero__title'>Welcome, {safe_name}</h1>"
         "<p class='home-hero__lead'>"
-        "This page explains how people records, evidence, theories, and proposal permissions work."
+        "This page was created because the Epstein files are spread across many releases and are difficult to review in full."
+        "</p>"
+        "<p class='home-hero__reason'>"
+        "<strong>Purpose:</strong> Bring the case information into one organized place, track who appears to be guilty and who is not, "
+        "and structure theories so they can be confirmed or debunked as evidence is reviewed."
         "</p>"
         "<div class='home-hero__chips'>"
         "<span class='home-chip'>People index</span>"

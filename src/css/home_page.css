@@ -78,6 +78,18 @@
   color: #dbeafe;
 }
 
+#home-shell .home-hero__reason {
+  margin: 0.68rem 0 0;
+  max-width: 70ch;
+  font-size: clamp(0.9rem, 1.4vw, 0.98rem);
+  line-height: 1.52;
+  color: #e2e8f0;
+}
+
+#home-shell .home-hero__reason strong {
+  color: #bfdbfe;
+}
+
 #home-shell .home-hero__chips {
   margin-top: 0.95rem;
   display: flex;
