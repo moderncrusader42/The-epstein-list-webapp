@@ -134,12 +134,19 @@
   margin-top: 0.25rem;
 }
 
+#sources-create-files,
 #sources-create-unsorted-files {
-  margin-top: 0.28rem;
-}
-
-#sources-create-unsorted-files .wrap {
-  border-radius: 12px;
+  position: absolute !important;
+  width: 1px !important;
+  min-width: 1px !important;
+  height: 1px !important;
+  min-height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
 }
 
 @media (max-width: 820px) {

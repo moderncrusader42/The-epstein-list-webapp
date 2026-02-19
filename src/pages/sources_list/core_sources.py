@@ -175,6 +175,36 @@ def _parse_unsorted_id_from_origin_key(origin_key: str) -> int:
     return parsed if parsed > 0 else 0
 
 
+def _parse_origin_key_set(raw_value: object) -> set[str]:
+    if raw_value in (None, ""):
+        return set()
+
+    candidates: List[object]
+    if isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if not stripped:
+            return set()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = []
+            candidates = parsed if isinstance(parsed, list) else []
+        else:
+            candidates = [part for part in re.split(r"[,\s]+", stripped) if str(part or "").strip()]
+    elif isinstance(raw_value, (list, tuple, set)):
+        candidates = list(raw_value)
+    else:
+        candidates = [raw_value]
+
+    keys: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate or "").strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
 def _parse_file_origins_input(raw_value: object) -> List[str]:
     values_attr = getattr(raw_value, "values", None)
     if values_attr is not None and hasattr(values_attr, "tolist"):
@@ -1996,27 +2026,41 @@ def _coerce_file_origin_rows(raw_rows: object) -> List[Tuple[str, str, str]]:
 
 
 def _render_create_file_origins_editor(rows: Sequence[Tuple[str, str, str]]) -> str:
-    if not rows:
-        return ""
-
-    body = "".join(
-        (
-            f"<div class='sources-file-origin-row' "
-            f"data-origin-key='{html.escape(origin_key, quote=True)}' "
-            f"data-file-name='{html.escape(display_name, quote=True)}'>"
-            f"<div class='sources-file-origin-row__name'>{html.escape(display_name)}</div>"
-            "<div class='sources-file-origin-row__input-wrap'>"
-            f"<input class='sources-file-origin-row__input' type='text' value='{html.escape(origin_value, quote=True)}' "
-            "placeholder='Origin/Url' />"
-            "</div>"
+    body = (
+        "".join(
+            (
+                f"<div class='sources-file-origin-row' "
+                f"data-origin-key='{html.escape(origin_key, quote=True)}' "
+                f"data-file-name='{html.escape(display_name, quote=True)}'>"
+                f"<div class='sources-file-origin-row__name'>{html.escape(display_name)}</div>"
+                "<div class='sources-file-origin-row__input-wrap'>"
+                f"<input class='sources-file-origin-row__input' type='text' value='{html.escape(origin_value, quote=True)}' "
+                "placeholder='Origin/Url' />"
+                "</div>"
+                "<div class='sources-file-origin-row__actions'>"
+                "<button class='sources-file-origin-row__remove' type='button' "
+                "title='Remove file' aria-label='Remove file'>X</button>"
+                "</div>"
+                "</div>"
+            )
+            for origin_key, display_name, origin_value in rows
+        )
+        if rows
+        else (
+            "<div class='sources-file-origin-empty'>"
+            "No files yet. Use + to add files."
             "</div>"
         )
-        for origin_key, display_name, origin_value in rows
     )
     return (
         "<section class='sources-file-origin-editor-shell'>"
+        "<div class='sources-file-origin-editor-toolbar'>"
+        "<span class='sources-file-origin-editor-title'>Source files</span>"
+        "<button class='sources-file-origin-add-btn' type='button' "
+        "title='Add files' aria-label='Add files'>+</button>"
+        "</div>"
         "<div class='sources-file-origin-editor-head'>"
-        "<span>File</span><span>Origin/Url</span>"
+        "<span>File</span><span>Origin/Url</span><span aria-hidden='true'></span>"
         "</div>"
         f"<div class='sources-file-origin-editor-body'>{body}</div>"
         "</section>"
@@ -2033,10 +2077,12 @@ def _sync_create_file_origins_editor(
     current_rows: object,
     selected_unsorted_file_ids: object = None,
     unsorted_catalog_state: object = None,
+    removed_origin_keys: object = None,
 ):
     file_paths = _resolve_upload_paths(uploaded_files)
     selected_unsorted_ids = _parse_unsorted_file_ids(selected_unsorted_file_ids)
     unsorted_by_id = _unsorted_catalog_by_id(unsorted_catalog_state)
+    removed_keys = _parse_origin_key_set(removed_origin_keys)
     selected_unsorted_rows = [
         unsorted_by_id[file_id]
         for file_id in selected_unsorted_ids
@@ -2044,7 +2090,7 @@ def _sync_create_file_origins_editor(
     ]
 
     if not file_paths and not selected_unsorted_rows:
-        return gr.update(value="", visible=False), gr.update(value="")
+        return gr.update(value=_render_create_file_origins_editor([]), visible=True), gr.update(value="")
 
     existing_rows = _coerce_file_origin_rows(current_rows)
     existing_by_key: Dict[str, List[str]] = {}
@@ -2070,6 +2116,8 @@ def _sync_create_file_origins_editor(
     for path_obj in file_paths:
         display_name = path_obj.name
         origin_key = _origin_key_for_uploaded_path(path_obj)
+        if origin_key in removed_keys:
+            continue
         next_origin = _take_existing_origin(origin_key, display_name, "")
         next_rows.append((origin_key, display_name, next_origin))
 
@@ -2079,6 +2127,8 @@ def _sync_create_file_origins_editor(
             continue
         display_name = _build_unsorted_origin_display_label(file_id, str(row.get("file_name") or ""))
         origin_key = _origin_key_for_unsorted_file(file_id)
+        if origin_key in removed_keys:
+            continue
         default_origin = str(row.get("origin_text") or "").strip()
         next_origin = _take_existing_origin(origin_key, display_name, default_origin)
         next_rows.append((origin_key, display_name, next_origin))
@@ -2087,9 +2137,49 @@ def _sync_create_file_origins_editor(
         [origin_key, origin_value, display_name]
         for origin_key, display_name, origin_value in next_rows
     ]
-    next_serialized = json.dumps(next_serialized_rows, ensure_ascii=True)
+    next_serialized = json.dumps(next_serialized_rows, ensure_ascii=True) if next_serialized_rows else ""
     next_markup = _render_create_file_origins_editor(next_rows)
     return gr.update(value=next_markup, visible=True), gr.update(value=next_serialized)
+
+
+def _filter_source_create_selected_files(
+    file_paths: Sequence[Path],
+    unsorted_rows: Sequence[Dict[str, object]],
+    raw_origins: object,
+) -> tuple[List[Path], List[Dict[str, object]]]:
+    origin_rows = _coerce_file_origin_rows(raw_origins)
+    if not origin_rows:
+        return list(file_paths), list(unsorted_rows)
+
+    include_counts: Dict[str, int] = {}
+    for origin_key, _origin_value, _display_name in origin_rows:
+        normalized_key = str(origin_key or "").strip()
+        if not normalized_key:
+            continue
+        include_counts[normalized_key] = include_counts.get(normalized_key, 0) + 1
+
+    selected_paths: List[Path] = []
+    for path_obj in file_paths:
+        origin_key = _origin_key_for_uploaded_path(path_obj)
+        remaining = include_counts.get(origin_key, 0)
+        if remaining <= 0:
+            continue
+        include_counts[origin_key] = remaining - 1
+        selected_paths.append(path_obj)
+
+    selected_unsorted_rows: List[Dict[str, object]] = []
+    for row in unsorted_rows:
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            continue
+        origin_key = _origin_key_for_unsorted_file(file_id)
+        remaining = include_counts.get(origin_key, 0)
+        if remaining <= 0:
+            continue
+        include_counts[origin_key] = remaining - 1
+        selected_unsorted_rows.append(row)
+
+    return selected_paths, selected_unsorted_rows
 
 
 def _resolve_source_create_origin_values(
@@ -3656,8 +3746,13 @@ def _create_source_card(
                 missing_text = ", ".join(missing)
                 raise ValueError(f"Some selected unsorted files no longer exist: {missing_text}")
 
+            file_paths, unsorted_rows = _filter_source_create_selected_files(
+                file_paths,
+                unsorted_rows,
+                source_file_origins,
+            )
             if not file_paths and not unsorted_rows:
-                raise ValueError("Add at least one uploaded file or unsorted file before creating a source.")
+                raise ValueError("Add at least one file before creating a source.")
 
             file_origin_values, unsorted_origin_values = _resolve_source_create_origin_values(
                 file_paths,
@@ -3756,7 +3851,7 @@ def _create_source_card(
 
             next_selected_slug = str(inserted["slug"])
 
-        total_file_count = len(file_paths) + len(selected_unsorted_ids)
+        total_file_count = len(file_paths) + len(unsorted_rows)
         total_incoming_bytes = incoming_uploaded_bytes + incoming_unsorted_bytes
         status_message = (
             f"✅ Source `{name_value}` created and {total_file_count} file(s) added "

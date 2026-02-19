@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from src.pages.sources_list.core_sources import (
     _create_source_card,
     _is_source_markdown_preview_mode,
     _render_cover_image_preview_markup,
+    _render_create_file_origins_editor,
     _render_source_description_markdown,
     _role_flags_from_request,
     _source_create_unsorted_picker_state,
@@ -73,6 +75,7 @@ def _reset_source_create_form(
         "",
         preselected_unsorted_files,
         unsorted_catalog_state,
+        "",
     )
     return (
         gr.update(value=""),
@@ -86,12 +89,13 @@ def _reset_source_create_form(
         gr.update(value=None),
         file_origins_editor_update,
         file_origins_state_update,
+        gr.update(value=""),
     )
 
 
 def _load_source_create_page(request: gr.Request):
     user, can_submit = _role_flags_from_request(request)
-    unsorted_choices, preselected_unsorted_values, unsorted_catalog_state = _source_create_unsorted_picker_state(request)
+    _unsorted_choices, preselected_unsorted_values, unsorted_catalog_state = _source_create_unsorted_picker_state(request)
     intro = gr.update(value="", visible=False)
     if not user:
         intro = gr.update(value="You must sign in to create a source.", visible=True)
@@ -105,11 +109,7 @@ def _load_source_create_page(request: gr.Request):
         "<h2>New Source</h2>",
         intro,
         *_reset_source_create_form(preselected_unsorted_values, unsorted_catalog_state),
-        gr.update(
-            choices=unsorted_choices,
-            value=preselected_unsorted_values,
-            interactive=bool(can_submit and unsorted_choices),
-        ),
+        gr.update(value=json.dumps(preselected_unsorted_values, ensure_ascii=True) if preselected_unsorted_values else ""),
         gr.update(value=unsorted_catalog_state),
         "",
     )
@@ -163,15 +163,28 @@ def _submit_source_create_form(
     success = str(status_message or "").strip().startswith("✅")
     default_preview_mode = _is_source_markdown_preview_mode(DEFAULT_MARKDOWN_VIEW)
     if success:
+        empty_origins_editor_update, empty_origins_state_update = _sync_create_file_origins_editor(
+            None,
+            "",
+            [],
+            "",
+            "",
+        )
         description_markdown_update = gr.update(value="", visible=not default_preview_mode)
         description_preview_update = gr.update(value=_render_source_description_markdown(""), visible=default_preview_mode)
         description_mode_update = gr.update(value=DEFAULT_MARKDOWN_VIEW)
-        clear_unsorted_files = gr.update(value=[])
+        clear_unsorted_files = gr.update(value="")
+        file_origins_editor_update = empty_origins_editor_update
+        file_origins_state_update = empty_origins_state_update
+        clear_removed_origin_keys = gr.update(value="")
     else:
         description_markdown_update = gr.update()
         description_preview_update = gr.update()
         description_mode_update = gr.update()
         clear_unsorted_files = gr.update()
+        file_origins_editor_update = clear_origins_editor
+        file_origins_state_update = clear_origins
+        clear_removed_origin_keys = gr.update()
 
     return (
         clear_name,
@@ -183,15 +196,16 @@ def _submit_source_create_form(
         clear_cover_media_preview,
         clear_tags,
         clear_files,
-        clear_origins_editor,
-        clear_origins,
+        file_origins_editor_update,
+        file_origins_state_update,
+        clear_removed_origin_keys,
         clear_unsorted_files,
         status_message,
     )
 
 
 def _cancel_source_create_form():
-    return (*_reset_source_create_form(), gr.update(value=[]), "")
+    return (*_reset_source_create_form(), gr.update(value=""), "")
 
 
 def make_sources_create_app() -> gr.Blocks:
@@ -216,10 +230,6 @@ def make_sources_create_app() -> gr.Blocks:
         with gr.Column(elem_id="sources-create-shell"):
             with gr.Row(elem_id="sources-create-page-title-row"):
                 title_md = gr.HTML("<h2>New Source</h2>", elem_id="sources-title")
-                gr.HTML(
-                    "<a class='the-list-create-back-link' href='/sources/'>Back to Sources</a>",
-                    elem_id="sources-create-back-link",
-                )
 
             create_intro = gr.Markdown(elem_id="sources-create-intro", visible=False)
             create_status = gr.Markdown(elem_id="sources-create-status")
@@ -303,23 +313,29 @@ def make_sources_create_app() -> gr.Blocks:
                 file_types=["image", "video", ".pdf", ".txt", ".md", ".csv", ".json"],
                 elem_id="sources-create-files",
             )
-            create_unsorted_files = gr.Dropdown(
-                label="Add from unsorted files",
-                choices=[],
-                value=[],
-                multiselect=True,
-                allow_custom_value=False,
-                interactive=False,
+            create_unsorted_files = gr.Textbox(
+                value="",
+                visible=False,
+                show_label=False,
                 elem_id="sources-create-unsorted-files",
+                elem_classes=["sources-hidden-input"],
             )
             create_file_origins_editor = gr.HTML(
-                visible=False,
+                value=_render_create_file_origins_editor([]),
+                visible=True,
                 elem_id="sources-create-file-origins-editor",
             )
             create_file_origins = gr.Textbox(
                 value="",
                 show_label=False,
                 elem_id="sources-create-file-origins-state",
+                elem_classes=["sources-hidden-input"],
+            )
+            create_removed_origin_keys = gr.Textbox(
+                value="",
+                visible=False,
+                show_label=False,
+                elem_id="sources-create-file-origin-removed-keys",
                 elem_classes=["sources-hidden-input"],
             )
             create_unsorted_catalog_state = gr.Textbox(
@@ -351,6 +367,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_removed_origin_keys,
                 create_unsorted_files,
                 create_unsorted_catalog_state,
                 create_status,
@@ -374,7 +391,13 @@ def make_sources_create_app() -> gr.Blocks:
                 _sync_create_file_origins_editor,
                 label="sync_source_create_file_origins_editor",
             ),
-            inputs=[create_files, create_file_origins, create_unsorted_files, create_unsorted_catalog_state],
+            inputs=[
+                create_files,
+                create_file_origins,
+                create_unsorted_files,
+                create_unsorted_catalog_state,
+                create_removed_origin_keys,
+            ],
             outputs=[create_file_origins_editor, create_file_origins],
             show_progress=False,
         )
@@ -385,7 +408,13 @@ def make_sources_create_app() -> gr.Blocks:
                 _sync_create_file_origins_editor,
                 label="sync_source_create_unsorted_origins_editor",
             ),
-            inputs=[create_files, create_file_origins, create_unsorted_files, create_unsorted_catalog_state],
+            inputs=[
+                create_files,
+                create_file_origins,
+                create_unsorted_files,
+                create_unsorted_catalog_state,
+                create_removed_origin_keys,
+            ],
             outputs=[create_file_origins_editor, create_file_origins],
             show_progress=False,
         )
@@ -418,6 +447,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_removed_origin_keys,
                 create_unsorted_files,
                 create_status,
             ],
@@ -442,6 +472,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_removed_origin_keys,
                 create_unsorted_files,
                 create_status,
             ],
