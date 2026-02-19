@@ -315,7 +315,7 @@ CREATE TABLE IF NOT EXISTS app.unsorted_files (
     CHECK (size_bytes >= 0)
 );
 
--- Per-user triage decision for an unsorted file.
+-- Per-user triage decisions for an unsorted file (one row per action type).
 CREATE TABLE IF NOT EXISTS app.unsorted_file_actions (
   id               BIGSERIAL PRIMARY KEY,
   unsorted_file_id BIGINT NOT NULL REFERENCES app.unsorted_files(id) ON DELETE CASCADE,
@@ -327,7 +327,8 @@ CREATE TABLE IF NOT EXISTS app.unsorted_file_actions (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT chk_unsorted_file_action_type
     CHECK (lower(action_type) IN ('too_redacted', 'push_to_source', 'create_new_source', 'useless')),
-  UNIQUE (unsorted_file_id, actor_user_id)
+  CONSTRAINT uq_unsorted_file_actions_file_actor_action_type
+    UNIQUE (unsorted_file_id, actor_user_id, action_type)
 );
 
 -- Proposal that an unsorted file should be pushed into an existing source.

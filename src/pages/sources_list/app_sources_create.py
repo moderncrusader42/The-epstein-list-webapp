@@ -16,6 +16,7 @@ from src.pages.sources_list.core_sources import (
     _render_cover_image_preview_markup,
     _render_source_description_markdown,
     _role_flags_from_request,
+    _source_create_unsorted_picker_state,
     _sync_create_file_origins_editor,
     _toggle_source_editor_markdown_view,
 )
@@ -62,8 +63,17 @@ def _header_source_create(request: gr.Request):
     return render_header(path="/sources", request=request)
 
 
-def _reset_source_create_form():
+def _reset_source_create_form(
+    preselected_unsorted_files: object = None,
+    unsorted_catalog_state: object = None,
+):
     default_preview_mode = _is_source_markdown_preview_mode(DEFAULT_MARKDOWN_VIEW)
+    file_origins_editor_update, file_origins_state_update = _sync_create_file_origins_editor(
+        None,
+        "",
+        preselected_unsorted_files,
+        unsorted_catalog_state,
+    )
     return (
         gr.update(value=""),
         gr.update(value="", visible=not default_preview_mode),
@@ -74,13 +84,14 @@ def _reset_source_create_form():
         gr.update(value=_render_cover_image_preview_markup("")),
         gr.update(value=""),
         gr.update(value=None),
-        gr.update(value="", visible=False),
-        gr.update(value=""),
+        file_origins_editor_update,
+        file_origins_state_update,
     )
 
 
 def _load_source_create_page(request: gr.Request):
     user, can_submit = _role_flags_from_request(request)
+    unsorted_choices, preselected_unsorted_values, unsorted_catalog_state = _source_create_unsorted_picker_state(request)
     intro = gr.update(value="", visible=False)
     if not user:
         intro = gr.update(value="You must sign in to create a source.", visible=True)
@@ -93,7 +104,13 @@ def _load_source_create_page(request: gr.Request):
     return (
         "<h2>New Source</h2>",
         intro,
-        *_reset_source_create_form(),
+        *_reset_source_create_form(preselected_unsorted_values, unsorted_catalog_state),
+        gr.update(
+            choices=unsorted_choices,
+            value=preselected_unsorted_values,
+            interactive=bool(can_submit and unsorted_choices),
+        ),
+        gr.update(value=unsorted_catalog_state),
         "",
     )
 
@@ -105,6 +122,7 @@ def _submit_source_create_form(
     source_cover_media_data: str,
     source_tags: str,
     uploaded_files: object,
+    selected_unsorted_files: object,
     source_file_origins: object,
     request: gr.Request,
 ):
@@ -139,6 +157,7 @@ def _submit_source_create_form(
         CATALOG_VIEW_ICONS,
         FILE_VIEW_ICONS,
         request,
+        selected_unsorted_file_ids=selected_unsorted_files,
     )
 
     success = str(status_message or "").strip().startswith("✅")
@@ -147,10 +166,12 @@ def _submit_source_create_form(
         description_markdown_update = gr.update(value="", visible=not default_preview_mode)
         description_preview_update = gr.update(value=_render_source_description_markdown(""), visible=default_preview_mode)
         description_mode_update = gr.update(value=DEFAULT_MARKDOWN_VIEW)
+        clear_unsorted_files = gr.update(value=[])
     else:
         description_markdown_update = gr.update()
         description_preview_update = gr.update()
         description_mode_update = gr.update()
+        clear_unsorted_files = gr.update()
 
     return (
         clear_name,
@@ -164,12 +185,13 @@ def _submit_source_create_form(
         clear_files,
         clear_origins_editor,
         clear_origins,
+        clear_unsorted_files,
         status_message,
     )
 
 
 def _cancel_source_create_form():
-    return (*_reset_source_create_form(), "")
+    return (*_reset_source_create_form(), gr.update(value=[]), "")
 
 
 def make_sources_create_app() -> gr.Blocks:
@@ -281,6 +303,15 @@ def make_sources_create_app() -> gr.Blocks:
                 file_types=["image", "video", ".pdf", ".txt", ".md", ".csv", ".json"],
                 elem_id="sources-create-files",
             )
+            create_unsorted_files = gr.Dropdown(
+                label="Add from unsorted files",
+                choices=[],
+                value=[],
+                multiselect=True,
+                allow_custom_value=False,
+                interactive=False,
+                elem_id="sources-create-unsorted-files",
+            )
             create_file_origins_editor = gr.HTML(
                 visible=False,
                 elem_id="sources-create-file-origins-editor",
@@ -291,9 +322,16 @@ def make_sources_create_app() -> gr.Blocks:
                 elem_id="sources-create-file-origins-state",
                 elem_classes=["sources-hidden-input"],
             )
+            create_unsorted_catalog_state = gr.Textbox(
+                value="",
+                visible=False,
+                show_label=False,
+                elem_id="sources-create-unsorted-catalog-state",
+                elem_classes=["sources-hidden-input"],
+            )
 
             with gr.Row(elem_id="sources-create-page-actions"):
-                create_source_btn = gr.Button("Create source + upload files", variant="primary")
+                create_source_btn = gr.Button("Create source + add files", variant="primary")
                 cancel_create_btn = gr.Button("Cancel", variant="secondary")
 
         app.load(timed_page_load("/source-create", _header_source_create), outputs=[hdr])
@@ -313,6 +351,8 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_unsorted_files,
+                create_unsorted_catalog_state,
                 create_status,
             ],
         )
@@ -334,7 +374,18 @@ def make_sources_create_app() -> gr.Blocks:
                 _sync_create_file_origins_editor,
                 label="sync_source_create_file_origins_editor",
             ),
-            inputs=[create_files, create_file_origins],
+            inputs=[create_files, create_file_origins, create_unsorted_files, create_unsorted_catalog_state],
+            outputs=[create_file_origins_editor, create_file_origins],
+            show_progress=False,
+        )
+
+        create_unsorted_files.change(
+            timed_page_load(
+                "/source-create",
+                _sync_create_file_origins_editor,
+                label="sync_source_create_unsorted_origins_editor",
+            ),
+            inputs=[create_files, create_file_origins, create_unsorted_files, create_unsorted_catalog_state],
             outputs=[create_file_origins_editor, create_file_origins],
             show_progress=False,
         )
@@ -352,6 +403,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_cover_media_data,
                 create_tags,
                 create_files,
+                create_unsorted_files,
                 create_file_origins,
             ],
             outputs=[
@@ -366,6 +418,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_unsorted_files,
                 create_status,
             ],
             show_progress=False,
@@ -389,6 +442,7 @@ def make_sources_create_app() -> gr.Blocks:
                 create_files,
                 create_file_origins_editor,
                 create_file_origins,
+                create_unsorted_files,
                 create_status,
             ],
             show_progress=False,

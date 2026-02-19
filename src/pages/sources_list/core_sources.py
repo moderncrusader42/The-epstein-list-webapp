@@ -69,6 +69,9 @@ ALLOWED_IMAGE_MIME_TYPES = {
     "image/gif": ".gif",
 }
 DATA_URL_IMAGE_RE = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$", re.IGNORECASE)
+ACTION_CREATE_NEW_SOURCE = "create_new_source"
+UPLOAD_ORIGIN_KEY_PREFIX = "upload::"
+UNSORTED_ORIGIN_KEY_PREFIX = "unsorted::"
 
 
 def _is_truthy(value: object) -> bool:
@@ -143,6 +146,33 @@ def _parse_source_file_ids(raw_value: object) -> List[int]:
         seen_ids.add(parsed)
         parsed_ids.append(parsed)
     return parsed_ids
+
+
+def _parse_unsorted_file_ids(raw_value: object) -> List[int]:
+    return _parse_source_file_ids(raw_value)
+
+
+def _origin_key_for_uploaded_path(path_obj: Path) -> str:
+    try:
+        resolved = str(path_obj.resolve())
+    except Exception:
+        resolved = str(path_obj)
+    return f"{UPLOAD_ORIGIN_KEY_PREFIX}{resolved}"
+
+
+def _origin_key_for_unsorted_file(file_id: int) -> str:
+    return f"{UNSORTED_ORIGIN_KEY_PREFIX}{int(file_id)}"
+
+
+def _parse_unsorted_id_from_origin_key(origin_key: str) -> int:
+    raw_key = str(origin_key or "").strip()
+    if not raw_key.startswith(UNSORTED_ORIGIN_KEY_PREFIX):
+        return 0
+    try:
+        parsed = int(raw_key[len(UNSORTED_ORIGIN_KEY_PREFIX) :])
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def _parse_file_origins_input(raw_value: object) -> List[str]:
@@ -313,6 +343,143 @@ def _parse_tag_query_values(raw_query: str) -> List[str]:
 
     values = [part.strip() for part in query.split(",") if part.strip()]
     return _normalize_selection(values)
+
+
+def _build_unsorted_origin_display_label(file_id: int, file_name: str) -> str:
+    safe_name = str(file_name or "").strip() or f"file-{file_id}"
+    return f"[Unsorted #{int(file_id)}] {safe_name}"
+
+
+def _fetch_unsorted_files_for_create() -> List[Dict[str, object]]:
+    _ensure_sources_db()
+    with readonly_session_scope() as session:
+        if not _table_exists_in_app_schema(session, "unsorted_files"):
+            return []
+
+        rows = session.execute(
+            text(
+                """
+                SELECT
+                    uf.id,
+                    uf.bucket,
+                    uf.blob_path,
+                    uf.file_name,
+                    uf.origin_text,
+                    uf.mime_type,
+                    uf.size_bytes,
+                    uf.created_at
+                FROM app.unsorted_files uf
+                ORDER BY uf.created_at DESC, uf.id DESC
+                """
+            )
+        ).mappings().all()
+
+    files: List[Dict[str, object]] = []
+    for row in rows:
+        file_id = int(row["id"] or 0)
+        if file_id <= 0:
+            continue
+        files.append(
+            {
+                "id": file_id,
+                "bucket": str(row["bucket"] or "").strip() or DEFAULT_SOURCE_BUCKET,
+                "blob_path": str(row["blob_path"] or "").strip().lstrip("/"),
+                "file_name": str(row["file_name"] or "").strip(),
+                "origin_text": str(row["origin_text"] or "").strip(),
+                "mime_type": str(row["mime_type"] or "").strip().lower(),
+                "size_bytes": max(0, int(row["size_bytes"] or 0)),
+                "created_at": row.get("created_at"),
+            }
+        )
+    return files
+
+
+def _build_source_create_unsorted_choices(unsorted_files: Sequence[Dict[str, object]]) -> List[Tuple[str, str]]:
+    choices: List[Tuple[str, str]] = []
+    for row in unsorted_files:
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            continue
+        file_name = str(row.get("file_name") or "").strip() or f"file-{file_id}"
+        size_label = _format_bytes(int(row.get("size_bytes") or 0))
+        created_at = row.get("created_at")
+        if isinstance(created_at, datetime):
+            created_label = created_at.strftime("%Y-%m-%d")
+        else:
+            created_label = ""
+        date_suffix = f" - {created_label}" if created_label else ""
+        label = f"[#{file_id}] {file_name} ({size_label}{date_suffix})"
+        choices.append((label, str(file_id)))
+    return choices
+
+
+def _serialize_source_create_unsorted_catalog(unsorted_files: Sequence[Dict[str, object]]) -> str:
+    payload: List[Dict[str, object]] = []
+    for row in unsorted_files:
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            continue
+        payload.append(
+            {
+                "id": file_id,
+                "bucket": str(row.get("bucket") or "").strip() or DEFAULT_SOURCE_BUCKET,
+                "blob_path": str(row.get("blob_path") or "").strip().lstrip("/"),
+                "file_name": str(row.get("file_name") or "").strip(),
+                "origin_text": str(row.get("origin_text") or "").strip(),
+                "mime_type": str(row.get("mime_type") or "").strip().lower(),
+                "size_bytes": max(0, int(row.get("size_bytes") or 0)),
+            }
+        )
+    return json.dumps(payload, ensure_ascii=True)
+
+
+def _parse_source_create_unsorted_catalog(raw_value: object) -> List[Dict[str, object]]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        candidates = raw_value
+    else:
+        text_value = str(raw_value or "").strip()
+        if not text_value:
+            return []
+        try:
+            parsed = json.loads(text_value)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        candidates = parsed
+
+    rows: List[Dict[str, object]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        file_id = int(candidate.get("id") or 0)
+        if file_id <= 0:
+            continue
+        rows.append(
+            {
+                "id": file_id,
+                "bucket": str(candidate.get("bucket") or "").strip() or DEFAULT_SOURCE_BUCKET,
+                "blob_path": str(candidate.get("blob_path") or "").strip().lstrip("/"),
+                "file_name": str(candidate.get("file_name") or "").strip(),
+                "origin_text": str(candidate.get("origin_text") or "").strip(),
+                "mime_type": str(candidate.get("mime_type") or "").strip().lower(),
+                "size_bytes": max(0, int(candidate.get("size_bytes") or 0)),
+            }
+        )
+    return rows
+
+
+def _source_create_unsorted_picker_state(request: gr.Request | None) -> tuple[List[Tuple[str, str]], List[str], str]:
+    all_unsorted_files = _fetch_unsorted_files_for_create()
+    choice_rows = _build_source_create_unsorted_choices(all_unsorted_files)
+    catalog_json = _serialize_source_create_unsorted_catalog(all_unsorted_files)
+
+    requested_ids = _parse_unsorted_file_ids(_query_param(request, "from_unsorted"))
+    available_ids = {int(row.get("id") or 0) for row in all_unsorted_files}
+    selected_values = [str(file_id) for file_id in requested_ids if file_id in available_ids]
+    return choice_rows, selected_values, catalog_json
 
 
 def _ensure_sources_db() -> None:
@@ -1785,7 +1952,7 @@ def _persist_uploaded_source_cover_image_data_url(
     )
 
 
-def _coerce_file_origin_rows(raw_rows: object) -> List[Tuple[str, str]]:
+def _coerce_file_origin_rows(raw_rows: object) -> List[Tuple[str, str, str]]:
     values_attr = getattr(raw_rows, "values", None)
     if values_attr is not None and hasattr(values_attr, "tolist"):
         try:
@@ -1815,7 +1982,7 @@ def _coerce_file_origin_rows(raw_rows: object) -> List[Tuple[str, str]]:
         else:
             raw_rows = []
 
-    rows: List[Tuple[str, str]] = []
+    rows: List[Tuple[str, str, str]] = []
     if not isinstance(raw_rows, list):
         return rows
     for row in raw_rows:
@@ -1823,25 +1990,28 @@ def _coerce_file_origin_rows(raw_rows: object) -> List[Tuple[str, str]]:
             continue
         file_label = str(row[0] if len(row) >= 1 else "").strip()
         origin_value = str(row[1] if len(row) >= 2 else "").strip()
-        rows.append((file_label, origin_value))
+        display_label = str(row[2] if len(row) >= 3 else file_label).strip() or file_label
+        rows.append((file_label, origin_value, display_label))
     return rows
 
 
-def _render_create_file_origins_editor(rows: Sequence[Tuple[str, str]]) -> str:
+def _render_create_file_origins_editor(rows: Sequence[Tuple[str, str, str]]) -> str:
     if not rows:
         return ""
 
     body = "".join(
         (
-            f"<div class='sources-file-origin-row' data-file-name='{html.escape(file_name, quote=True)}'>"
-            f"<div class='sources-file-origin-row__name'>{html.escape(file_name)}</div>"
+            f"<div class='sources-file-origin-row' "
+            f"data-origin-key='{html.escape(origin_key, quote=True)}' "
+            f"data-file-name='{html.escape(display_name, quote=True)}'>"
+            f"<div class='sources-file-origin-row__name'>{html.escape(display_name)}</div>"
             "<div class='sources-file-origin-row__input-wrap'>"
             f"<input class='sources-file-origin-row__input' type='text' value='{html.escape(origin_value, quote=True)}' "
             "placeholder='Origin/Url' />"
             "</div>"
             "</div>"
         )
-        for file_name, origin_value in rows
+        for origin_key, display_name, origin_value in rows
     )
     return (
         "<section class='sources-file-origin-editor-shell'>"
@@ -1853,30 +2023,126 @@ def _render_create_file_origins_editor(rows: Sequence[Tuple[str, str]]) -> str:
     )
 
 
-def _sync_create_file_origins_editor(uploaded_files: object, current_rows: object):
+def _unsorted_catalog_by_id(raw_catalog: object) -> Dict[int, Dict[str, object]]:
+    rows = _parse_source_create_unsorted_catalog(raw_catalog)
+    return {int(row.get("id") or 0): row for row in rows if int(row.get("id") or 0) > 0}
+
+
+def _sync_create_file_origins_editor(
+    uploaded_files: object,
+    current_rows: object,
+    selected_unsorted_file_ids: object = None,
+    unsorted_catalog_state: object = None,
+):
     file_paths = _resolve_upload_paths(uploaded_files)
-    if not file_paths:
+    selected_unsorted_ids = _parse_unsorted_file_ids(selected_unsorted_file_ids)
+    unsorted_by_id = _unsorted_catalog_by_id(unsorted_catalog_state)
+    selected_unsorted_rows = [
+        unsorted_by_id[file_id]
+        for file_id in selected_unsorted_ids
+        if file_id in unsorted_by_id
+    ]
+
+    if not file_paths and not selected_unsorted_rows:
         return gr.update(value="", visible=False), gr.update(value="")
 
     existing_rows = _coerce_file_origin_rows(current_rows)
-    existing_by_file_name: Dict[str, List[str]] = {}
-    for file_label, origin_value in existing_rows:
-        if not file_label:
-            continue
-        existing_by_file_name.setdefault(file_label, []).append(origin_value)
+    existing_by_key: Dict[str, List[str]] = {}
+    existing_by_display: Dict[str, List[str]] = {}
+    for file_label, origin_value, display_label in existing_rows:
+        key_label = str(file_label or "").strip()
+        if key_label:
+            existing_by_key.setdefault(key_label, []).append(origin_value)
+        display_text = str(display_label or key_label).strip()
+        if display_text:
+            existing_by_display.setdefault(display_text, []).append(origin_value)
 
-    next_rows: List[Tuple[str, str]] = []
+    def _take_existing_origin(origin_key: str, display_name: str, fallback: str = "") -> str:
+        key_candidates = existing_by_key.get(origin_key, [])
+        if key_candidates:
+            return key_candidates.pop(0)
+        display_candidates = existing_by_display.get(display_name, [])
+        if display_candidates:
+            return display_candidates.pop(0)
+        return fallback
+
+    next_rows: List[Tuple[str, str, str]] = []
     for path_obj in file_paths:
-        file_label = path_obj.name
-        next_origin = ""
-        existing_candidates = existing_by_file_name.get(file_label, [])
-        if existing_candidates:
-            next_origin = existing_candidates.pop(0)
-        next_rows.append((file_label, next_origin))
+        display_name = path_obj.name
+        origin_key = _origin_key_for_uploaded_path(path_obj)
+        next_origin = _take_existing_origin(origin_key, display_name, "")
+        next_rows.append((origin_key, display_name, next_origin))
 
-    next_serialized = json.dumps(next_rows)
+    for row in selected_unsorted_rows:
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            continue
+        display_name = _build_unsorted_origin_display_label(file_id, str(row.get("file_name") or ""))
+        origin_key = _origin_key_for_unsorted_file(file_id)
+        default_origin = str(row.get("origin_text") or "").strip()
+        next_origin = _take_existing_origin(origin_key, display_name, default_origin)
+        next_rows.append((origin_key, display_name, next_origin))
+
+    next_serialized_rows = [
+        [origin_key, origin_value, display_name]
+        for origin_key, display_name, origin_value in next_rows
+    ]
+    next_serialized = json.dumps(next_serialized_rows, ensure_ascii=True)
     next_markup = _render_create_file_origins_editor(next_rows)
     return gr.update(value=next_markup, visible=True), gr.update(value=next_serialized)
+
+
+def _resolve_source_create_origin_values(
+    file_paths: Sequence[Path],
+    unsorted_rows: Sequence[Dict[str, object]],
+    raw_origins: object,
+) -> tuple[List[str], List[str]]:
+    expected_keys: List[Tuple[str, str, str]] = []
+    for path_obj in file_paths:
+        display_name = path_obj.name
+        expected_keys.append((_origin_key_for_uploaded_path(path_obj), display_name, "upload"))
+    for row in unsorted_rows:
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            continue
+        display_name = _build_unsorted_origin_display_label(file_id, str(row.get("file_name") or ""))
+        expected_keys.append((_origin_key_for_unsorted_file(file_id), display_name, "unsorted"))
+
+    if not expected_keys:
+        return [], []
+
+    existing_rows = _coerce_file_origin_rows(raw_origins)
+    origin_by_key: Dict[str, List[str]] = {}
+    origin_by_display: Dict[str, List[str]] = {}
+    for file_label, origin_value, display_label in existing_rows:
+        normalized_key = str(file_label or "").strip()
+        if normalized_key:
+            origin_by_key.setdefault(normalized_key, []).append(origin_value)
+        normalized_display = str(display_label or normalized_key).strip()
+        if normalized_display:
+            origin_by_display.setdefault(normalized_display, []).append(origin_value)
+
+    uploaded_origins: List[str] = []
+    unsorted_origins: List[str] = []
+    for origin_key, display_name, scope in expected_keys:
+        candidates = origin_by_key.get(origin_key, [])
+        origin_value = candidates.pop(0) if candidates else ""
+        if not origin_value:
+            display_candidates = origin_by_display.get(display_name, [])
+            if display_candidates:
+                origin_value = display_candidates.pop(0)
+        if not origin_value and scope == "unsorted":
+            unsorted_id = _parse_unsorted_id_from_origin_key(origin_key)
+            row_match = next((row for row in unsorted_rows if int(row.get("id") or 0) == unsorted_id), None)
+            origin_value = str(row_match.get("origin_text") or "").strip() if row_match else ""
+        if not origin_value:
+            raise ValueError("Each file selected for this source must include an Origin/Url value.")
+        if scope == "upload":
+            uploaded_origins.append(origin_value)
+        else:
+            unsorted_origins.append(origin_value)
+
+    return uploaded_origins, unsorted_origins
 
 
 def _store_uploaded_files_for_source(
@@ -1981,6 +2247,261 @@ def _store_uploaded_files_for_source(
             inserted_rows,
         )
 
+    return incoming_bytes
+
+
+def _fetch_unsorted_files_by_ids(session, file_ids: Sequence[int]) -> List[Dict[str, object]]:
+    normalized_ids: List[int] = []
+    seen_ids: set[int] = set()
+    for file_id in file_ids:
+        try:
+            parsed = int(file_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed <= 0 or parsed in seen_ids:
+            continue
+        seen_ids.add(parsed)
+        normalized_ids.append(parsed)
+    if not normalized_ids:
+        return []
+
+    if not _table_exists_in_app_schema(session, "unsorted_files"):
+        return []
+
+    bind_values: Dict[str, object] = {}
+    placeholders: List[str] = []
+    for index, file_id in enumerate(normalized_ids):
+        key = f"unsorted_file_id_{index}"
+        bind_values[key] = int(file_id)
+        placeholders.append(f":{key}")
+
+    rows = session.execute(
+        text(
+            f"""
+            SELECT
+                uf.id,
+                uf.bucket,
+                uf.blob_path,
+                uf.file_name,
+                uf.origin_text,
+                uf.mime_type,
+                uf.size_bytes
+            FROM app.unsorted_files uf
+            WHERE uf.id IN ({", ".join(placeholders)})
+            """
+        ),
+        bind_values,
+    ).mappings().all()
+
+    rows_by_id: Dict[int, Dict[str, object]] = {
+        int(row.get("id") or 0): {
+            "id": int(row.get("id") or 0),
+            "bucket": str(row.get("bucket") or "").strip() or DEFAULT_SOURCE_BUCKET,
+            "blob_path": str(row.get("blob_path") or "").strip().lstrip("/"),
+            "file_name": str(row.get("file_name") or "").strip(),
+            "origin_text": str(row.get("origin_text") or "").strip(),
+            "mime_type": str(row.get("mime_type") or "").strip().lower(),
+            "size_bytes": max(0, int(row.get("size_bytes") or 0)),
+        }
+        for row in rows
+        if int(row.get("id") or 0) > 0
+    }
+    return [rows_by_id[file_id] for file_id in normalized_ids if file_id in rows_by_id]
+
+
+def _mark_unsorted_files_create_source_action(
+    session,
+    *,
+    unsorted_file_ids: Sequence[int],
+    actor_user_id: int,
+    source_id: int,
+    source_slug: str,
+) -> None:
+    if actor_user_id <= 0 or not unsorted_file_ids:
+        return
+    if not _table_exists_in_app_schema(session, "unsorted_file_actions"):
+        return
+
+    rows: List[Dict[str, object]] = []
+    for file_id in unsorted_file_ids:
+        try:
+            parsed = int(file_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed <= 0:
+            continue
+        rows.append(
+            {
+                "unsorted_file_id": parsed,
+                "actor_user_id": int(actor_user_id),
+                "action_type": ACTION_CREATE_NEW_SOURCE,
+                "source_id": int(source_id),
+                "source_slug": str(source_slug or "").strip().lower(),
+            }
+        )
+    if not rows:
+        return
+
+    session.execute(
+        text(
+            """
+            INSERT INTO app.unsorted_file_actions (
+                unsorted_file_id,
+                actor_user_id,
+                action_type,
+                source_id,
+                source_slug
+            )
+            VALUES (
+                :unsorted_file_id,
+                :actor_user_id,
+                :action_type,
+                :source_id,
+                :source_slug
+            )
+            ON CONFLICT (unsorted_file_id, actor_user_id, action_type) DO UPDATE
+            SET source_id = EXCLUDED.source_id,
+                source_slug = EXCLUDED.source_slug,
+                updated_at = now()
+            """
+        ),
+        rows,
+    )
+
+
+def _store_unsorted_files_for_source(
+    session,
+    *,
+    source_id: int,
+    source_slug: str,
+    bucket_value: str,
+    folder_prefix: str,
+    max_bytes: int,
+    unsorted_files: Sequence[Dict[str, object]],
+    origin_urls: Sequence[str],
+    actor_user_id: int,
+    uploaded_blob_refs: List[Tuple[str, str]],
+) -> int:
+    if not unsorted_files:
+        return 0
+    if len(origin_urls) != len(unsorted_files):
+        raise ValueError("Each selected unsorted file must include an Origin/Url value.")
+
+    normalized_max_bytes = max(1, int(max_bytes or DEFAULT_SOURCE_MAX_BYTES))
+    incoming_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in unsorted_files)
+    if incoming_bytes <= 0:
+        raise ValueError("Selected unsorted files are empty.")
+
+    used_bytes = int(
+        session.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(size_bytes), 0)::bigint
+                FROM app.sources_files
+                WHERE source_id = :source_id
+                """
+            ),
+            {"source_id": int(source_id)},
+        ).scalar_one()
+        or 0
+    )
+    if used_bytes + incoming_bytes > normalized_max_bytes:
+        available = normalized_max_bytes - used_bytes
+        raise ValueError(
+            "Source storage limit reached. "
+            f"Current: {_format_bytes(used_bytes)}, "
+            f"incoming: {_format_bytes(incoming_bytes)}, "
+            f"available: {_format_bytes(max(0, available))}, "
+            f"limit: {_format_bytes(normalized_max_bytes)}."
+        )
+
+    inserted_rows: List[Dict[str, object]] = []
+    imported_file_ids: List[int] = []
+    destination_bucket = get_bucket(bucket_value)
+
+    for index, row in enumerate(unsorted_files):
+        file_id = int(row.get("id") or 0)
+        if file_id <= 0:
+            raise ValueError("An unsorted file selection is invalid.")
+
+        origin_url = str(origin_urls[index] or "").strip()
+        if not origin_url:
+            raise ValueError("Each selected unsorted file must include an Origin/Url value.")
+
+        source_blob_path = str(row.get("blob_path") or "").strip().lstrip("/")
+        if not source_blob_path:
+            raise ValueError("A selected unsorted file is missing its storage path.")
+
+        source_bucket_name = str(row.get("bucket") or "").strip() or DEFAULT_SOURCE_BUCKET
+        source_bucket = get_bucket(source_bucket_name)
+        source_blob = source_bucket.blob(source_blob_path)
+
+        safe_name = _sanitize_filename(str(row.get("file_name") or "").strip())
+        if not safe_name:
+            safe_name = f"file-{uuid4().hex[:8]}"
+        stored_name = f"{uuid4().hex[:10]}-{safe_name}"
+        destination_blob_name = f"{folder_prefix}/{stored_name}" if folder_prefix else stored_name
+
+        copied_blob = source_bucket.copy_blob(source_blob, destination_bucket, destination_blob_name)
+        copied_blob.cache_control = "public, max-age=3600"
+        try:
+            copied_blob.patch()
+        except Exception:
+            pass
+
+        uploaded_blob_refs.append((bucket_value, destination_blob_name))
+
+        mime_type = str(row.get("mime_type") or "").strip().lower()
+        if not mime_type:
+            mime_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+
+        inserted_rows.append(
+            {
+                "source_id": int(source_id),
+                "blob_path": destination_blob_name,
+                "file_name": safe_name,
+                "origin_url": origin_url,
+                "mime_type": mime_type,
+                "size_bytes": max(0, int(row.get("size_bytes") or 0)),
+                "uploaded_by_user_id": int(actor_user_id),
+            }
+        )
+        imported_file_ids.append(file_id)
+
+    if inserted_rows:
+        session.execute(
+            text(
+                """
+                INSERT INTO app.sources_files (
+                    source_id,
+                    blob_path,
+                    file_name,
+                    origin_url,
+                    mime_type,
+                    size_bytes,
+                    uploaded_by_user_id
+                )
+                VALUES (
+                    :source_id,
+                    :blob_path,
+                    :file_name,
+                    :origin_url,
+                    :mime_type,
+                    :size_bytes,
+                    :uploaded_by_user_id
+                )
+                """
+            ),
+            inserted_rows,
+        )
+
+    _mark_unsorted_files_create_source_action(
+        session,
+        unsorted_file_ids=imported_file_ids,
+        actor_user_id=actor_user_id,
+        source_id=source_id,
+        source_slug=source_slug,
+    )
     return incoming_bytes
 
 
@@ -3089,6 +3610,7 @@ def _create_source_card(
     catalog_view_mode: str,
     file_view_mode: str,
     request: gr.Request,
+    selected_unsorted_file_ids: object = None,
 ):
     status_message = ""
     next_selected_slug = str(current_selected_slug or "").strip().lower()
@@ -3110,15 +3632,38 @@ def _create_source_card(
         cover_data_url = str(source_cover_media_data or "").strip()
         tag_values = _parse_tags_input(source_tags)
         file_paths = _resolve_upload_paths(uploaded_files)
-        if not file_paths:
-            raise ValueError("Add files when creating a source. Empty sources are not allowed.")
-        file_origin_values = _resolve_file_origins_for_upload(file_paths, source_file_origins)
+
+        selected_unsorted_ids = _parse_unsorted_file_ids(selected_unsorted_file_ids)
+        if not selected_unsorted_ids:
+            selected_unsorted_ids = sorted(
+                {
+                    _parse_unsorted_id_from_origin_key(str(file_label or "").strip())
+                    for file_label, _origin_value, _display in _coerce_file_origin_rows(source_file_origins)
+                    if _parse_unsorted_id_from_origin_key(str(file_label or "").strip()) > 0
+                }
+            )
 
         with session_scope() as session:
             _ensure_sources_db()
             actor_user_id = _resolve_or_create_actor_user_id(session, user)
             if actor_user_id <= 0:
                 raise ValueError("Could not resolve your user id.")
+
+            unsorted_rows = _fetch_unsorted_files_by_ids(session, selected_unsorted_ids)
+            if selected_unsorted_ids and len(unsorted_rows) != len(selected_unsorted_ids):
+                found_ids = {int(row.get("id") or 0) for row in unsorted_rows}
+                missing = [str(file_id) for file_id in selected_unsorted_ids if file_id not in found_ids]
+                missing_text = ", ".join(missing)
+                raise ValueError(f"Some selected unsorted files no longer exist: {missing_text}")
+
+            if not file_paths and not unsorted_rows:
+                raise ValueError("Add at least one uploaded file or unsorted file before creating a source.")
+
+            file_origin_values, unsorted_origin_values = _resolve_source_create_origin_values(
+                file_paths,
+                unsorted_rows,
+                source_file_origins,
+            )
 
             slug = _next_available_source_slug(session, name_value)
             folder_prefix = _build_source_folder_prefix(slug)
@@ -3183,23 +3728,39 @@ def _create_source_card(
 
             source_id = int(inserted["id"])
             _set_source_tags(session, source_id, tag_values)
-            incoming_bytes = _store_uploaded_files_for_source(
+            incoming_uploaded_bytes = 0
+            if file_paths:
+                incoming_uploaded_bytes = _store_uploaded_files_for_source(
+                    session,
+                    source_id=source_id,
+                    bucket_value=bucket_value,
+                    folder_prefix=folder_prefix,
+                    max_bytes=DEFAULT_SOURCE_MAX_BYTES,
+                    file_paths=file_paths,
+                    origin_urls=file_origin_values,
+                    actor_user_id=actor_user_id,
+                    uploaded_blob_refs=uploaded_blob_refs,
+                )
+            incoming_unsorted_bytes = _store_unsorted_files_for_source(
                 session,
                 source_id=source_id,
+                source_slug=slug,
                 bucket_value=bucket_value,
                 folder_prefix=folder_prefix,
                 max_bytes=DEFAULT_SOURCE_MAX_BYTES,
-                file_paths=file_paths,
-                origin_urls=file_origin_values,
+                unsorted_files=unsorted_rows,
+                origin_urls=unsorted_origin_values,
                 actor_user_id=actor_user_id,
                 uploaded_blob_refs=uploaded_blob_refs,
             )
 
             next_selected_slug = str(inserted["slug"])
 
+        total_file_count = len(file_paths) + len(selected_unsorted_ids)
+        total_incoming_bytes = incoming_uploaded_bytes + incoming_unsorted_bytes
         status_message = (
-            f"✅ Source `{name_value}` created and {len(file_paths)} file(s) uploaded "
-            f"({_format_bytes(incoming_bytes)})."
+            f"✅ Source `{name_value}` created and {total_file_count} file(s) added "
+            f"({_format_bytes(total_incoming_bytes)})."
         )
         clear_name = gr.update(value="")
         clear_description_markdown = gr.update(value="")

@@ -20,12 +20,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 
 from src.db import readonly_session_scope, session_scope
-from src.gcs_storage import media_path, upload_bytes
+from src.gcs_storage import get_bucket, media_path, upload_bytes
 from src.local_user_roles import report_and_disable_user
 from src.login_logic import get_user
 from src.page_timing import timed_page_load
 from src.pages.header import render_header, with_light_mode_head
 from src.pages.people_display.core_people import _render_article_markdown as _render_citation_compiled_markdown
+from src.pages.sources_list.core_sources import _store_unsorted_files_for_source
 from src.people_proposal_diffs import ensure_people_diff_tables, upsert_people_diff_payload
 from src.people_taxonomy import (
     ensure_people_cards_refs,
@@ -101,8 +102,10 @@ PROPOSAL_SCOPE_ARTICLE = "article"
 LEGACY_PROPOSAL_SCOPE_DESCRIPTION = "description"
 PROPOSAL_SCOPE_CARD = "card"
 PROPOSAL_SCOPE_CARD_ARTICLE = "card_article"
+PROPOSAL_SCOPE_SOURCE = "source"
 PROPOSAL_SOURCE_PEOPLE = "people"
 PROPOSAL_SOURCE_THEORY = "theory"
+PROPOSAL_SOURCE_SOURCE = "source"
 _DIFF_TOKEN_RE = re.compile(r"\s+|[^\s]+")
 _MARKDOWN_LINE_PREFIX_RE = re.compile(r"^(\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+))(.*)$")
 _TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
@@ -780,6 +783,8 @@ def _decode_events(raw_value: object) -> List[Dict[str, object]]:
 
 def _normalize_proposal_scope(value: object) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized == PROPOSAL_SCOPE_SOURCE:
+        return PROPOSAL_SCOPE_SOURCE
     if normalized == PROPOSAL_SCOPE_CARD:
         return PROPOSAL_SCOPE_CARD
     if normalized == PROPOSAL_SCOPE_CARD_ARTICLE:
@@ -791,6 +796,8 @@ def _normalize_proposal_scope(value: object) -> str:
 
 def _normalize_proposal_source(value: object) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized == PROPOSAL_SOURCE_SOURCE:
+        return PROPOSAL_SOURCE_SOURCE
     if normalized == PROPOSAL_SOURCE_THEORY:
         return PROPOSAL_SOURCE_THEORY
     return PROPOSAL_SOURCE_PEOPLE
@@ -798,6 +805,8 @@ def _normalize_proposal_source(value: object) -> str:
 
 def _proposal_source_label(source: str) -> str:
     normalized_source = _normalize_proposal_source(source)
+    if normalized_source == PROPOSAL_SOURCE_SOURCE:
+        return "SOURCE"
     if normalized_source == PROPOSAL_SOURCE_THEORY:
         return "THEORY"
     return "PEOPLE"
@@ -1392,7 +1401,10 @@ def _fetch_theory(slug: str) -> Dict[str, object] | None:
 
 
 def _fetch_profile_for_source(slug: str, proposal_source: str) -> Dict[str, object] | None:
-    if _normalize_proposal_source(proposal_source) == PROPOSAL_SOURCE_THEORY:
+    normalized_source = _normalize_proposal_source(proposal_source)
+    if normalized_source == PROPOSAL_SOURCE_SOURCE:
+        return None
+    if normalized_source == PROPOSAL_SOURCE_THEORY:
         return _fetch_theory(slug)
     return _fetch_person(slug)
 
@@ -1408,6 +1420,8 @@ def _record_proposal_event(
 ) -> None:
     payload_json = json.dumps(payload or {}, ensure_ascii=True)
     source = _normalize_proposal_source(proposal_source)
+    if source == PROPOSAL_SOURCE_SOURCE:
+        return
     events_table = "app.theory_change_events" if source == PROPOSAL_SOURCE_THEORY else "app.people_change_events"
     session.execute(
         text(
@@ -1964,6 +1978,164 @@ def _fetch_theory_change_proposals(
     return result_rows
 
 
+def _build_source_push_review_markdown(
+    *,
+    unsorted_file_id: int,
+    file_name: str,
+    source_slug: str,
+    source_name: str,
+    origin_text: str,
+    mime_type: str,
+    size_bytes: int,
+    note: str,
+    media_url: str,
+) -> tuple[str, str]:
+    safe_file_name = (file_name or "").strip() or f"file-{max(0, int(unsorted_file_id or 0))}"
+    safe_source_slug = (source_slug or "").strip().lower()
+    safe_source_name = (source_name or "").strip() or safe_source_slug or "source"
+    safe_origin = (origin_text or "").strip() or "n/a"
+    safe_mime = (mime_type or "").strip() or "unknown"
+    safe_size = max(0, int(size_bytes or 0))
+    safe_note = (note or "").strip()
+    safe_media_url = (media_url or "").strip()
+
+    current_lines = [
+        "## Current state",
+        f"- Unsorted file `#{max(0, int(unsorted_file_id or 0))}` is pending routing.",
+        f"- File: `{safe_file_name}`",
+        f"- Current location: `unsorted`",
+    ]
+
+    proposed_lines = [
+        "## Proposed state",
+        f"- Push unsorted file `#{max(0, int(unsorted_file_id or 0))}` to source `{safe_source_slug or 'unknown'}`.",
+        f"- Source name: `{safe_source_name}`",
+        f"- File: `{safe_file_name}`",
+        f"- Mime type: `{safe_mime}`",
+        f"- File size (bytes): `{safe_size}`",
+        f"- Origin/description: {safe_origin}",
+    ]
+    if safe_note:
+        proposed_lines.append(f"- User note: {safe_note}")
+    if safe_media_url:
+        proposed_lines.append(f"- File URL: {safe_media_url}")
+
+    return ("\n".join(current_lines), "\n".join(proposed_lines))
+
+
+def _fetch_source_change_proposals(
+    limit: int = 120,
+    slug_filter: str = "",
+    *,
+    skip_table_check: bool = False,
+) -> List[Dict[str, object]]:
+    _ = skip_table_check
+    _ensure_local_db()
+    normalized_slug = (slug_filter or "").strip().lower()
+    max_limit = max(1, int(limit))
+    with readonly_session_scope() as session:
+        try:
+            rows = session.execute(
+                text(
+                    """
+                    WITH ranked AS (
+                        SELECT
+                            p.id,
+                            COALESCE(p.source_slug, '') AS person_slug,
+                            p.proposer_user_id,
+                            COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
+                            COALESCE(proposer_user.email, '') AS proposer_email,
+                            'source' AS proposal_scope,
+                            p.note,
+                            p.status,
+                            p.created_at,
+                            p.reviewed_at,
+                            0::bigint AS reviewer_user_id,
+                            ''::text AS reviewer_name,
+                            ''::text AS reviewer_email,
+                            ''::text AS review_note,
+                            0::integer AS report_triggered,
+                            p.unsorted_file_id,
+                            COALESCE(uf.file_name, '') AS unsorted_file_name,
+                            COALESCE(uf.origin_text, '') AS unsorted_origin_text,
+                            COALESCE(uf.mime_type, '') AS unsorted_mime_type,
+                            COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
+                            COALESCE(uf.bucket, '') AS unsorted_bucket,
+                            COALESCE(uf.blob_path, '') AS unsorted_blob_path,
+                            COALESCE(s.slug, p.source_slug, '') AS source_slug,
+                            COALESCE(s.name, '') AS source_name,
+                            p.source_id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY 'source'
+                                ORDER BY p.id ASC
+                            ) AS scope_index
+                        FROM app.unsorted_file_push_proposals p
+                        LEFT JOIN app.unsorted_files uf
+                            ON uf.id = p.unsorted_file_id
+                        LEFT JOIN app.sources_cards s
+                            ON s.id = p.source_id
+                        LEFT JOIN app."user" proposer_user
+                            ON proposer_user.id = p.proposer_user_id
+                        WHERE COALESCE(lower(p.status), '') NOT IN ('accepted', 'declined')
+                          AND (:source_slug = '' OR COALESCE(lower(p.source_slug), '') = :source_slug)
+                    )
+                    SELECT
+                        id,
+                        person_slug,
+                        proposer_user_id,
+                        proposer_name,
+                        proposer_email,
+                        proposal_scope,
+                        note,
+                        status,
+                        created_at,
+                        reviewed_at,
+                        reviewer_user_id,
+                        reviewer_name,
+                        reviewer_email,
+                        review_note,
+                        report_triggered,
+                        unsorted_file_id,
+                        unsorted_file_name,
+                        unsorted_origin_text,
+                        unsorted_mime_type,
+                        unsorted_size_bytes,
+                        unsorted_bucket,
+                        unsorted_blob_path,
+                        source_slug,
+                        source_name,
+                        source_id,
+                        'S-' || lpad(scope_index::text, 3, '0') AS dataset_entry
+                    FROM ranked
+                    ORDER BY
+                        CASE status
+                            WHEN 'pending' THEN 0
+                            WHEN 'reported' THEN 1
+                            ELSE 2
+                        END,
+                        created_at ASC,
+                        id ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"source_slug": normalized_slug, "limit": max_limit},
+            ).mappings().all()
+        except SQLAlchemyDatabaseError as exc:
+            if _is_missing_relation_error(exc):
+                _warn_missing_review_tables(
+                    "fetch_source_change_proposals",
+                    (
+                        "app.unsorted_file_push_proposals",
+                    ),
+                )
+                return []
+            raise
+    result_rows = [dict(row) for row in rows]
+    for row in result_rows:
+        row["proposal_source"] = PROPOSAL_SOURCE_SOURCE
+    return result_rows
+
+
 def _proposal_status_rank(status_value: object) -> int:
     normalized = str(status_value or "").strip().lower()
     if normalized == "pending":
@@ -2007,7 +2179,12 @@ def _fetch_change_proposals(
         slug_filter=slug_filter,
         skip_table_check=skip_table_check,
     )
-    combined_rows = [*people_rows, *theory_rows]
+    source_rows = _fetch_source_change_proposals(
+        limit=max_limit,
+        slug_filter=slug_filter,
+        skip_table_check=skip_table_check,
+    )
+    combined_rows = [*people_rows, *theory_rows, *source_rows]
     combined_rows.sort(
         key=lambda row: (
             _proposal_status_rank(row.get("status")),
@@ -2491,11 +2668,246 @@ def _fetch_theory_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
     return proposal
 
 
+def _fetch_source_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
+    _ensure_local_db()
+    with readonly_session_scope() as session:
+        try:
+            row = session.execute(
+                text(
+                    """
+                    SELECT
+                        p.id,
+                        COALESCE(p.source_slug, '') AS person_slug,
+                        p.proposer_user_id,
+                        COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
+                        COALESCE(proposer_user.email, '') AS proposer_email,
+                        'source' AS proposal_scope,
+                        COALESCE(p.note, '') AS note,
+                        COALESCE(p.status, '') AS status,
+                        p.created_at,
+                        p.reviewed_at,
+                        0::bigint AS reviewer_user_id,
+                        ''::text AS reviewer_name,
+                        ''::text AS reviewer_email,
+                        ''::text AS review_note,
+                        0::integer AS report_triggered,
+                        p.unsorted_file_id,
+                        COALESCE(uf.file_name, '') AS unsorted_file_name,
+                        COALESCE(uf.origin_text, '') AS unsorted_origin_text,
+                        COALESCE(uf.mime_type, '') AS unsorted_mime_type,
+                        COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
+                        COALESCE(uf.bucket, '') AS unsorted_bucket,
+                        COALESCE(uf.blob_path, '') AS unsorted_blob_path,
+                        COALESCE(s.slug, p.source_slug, '') AS source_slug,
+                        COALESCE(s.name, '') AS source_name,
+                        p.source_id
+                    FROM app.unsorted_file_push_proposals p
+                    LEFT JOIN app.unsorted_files uf
+                        ON uf.id = p.unsorted_file_id
+                    LEFT JOIN app.sources_cards s
+                        ON s.id = p.source_id
+                    LEFT JOIN app."user" proposer_user
+                        ON proposer_user.id = p.proposer_user_id
+                    WHERE p.id = :proposal_id
+                    """
+                ),
+                {"proposal_id": int(proposal_id)},
+            ).mappings().one_or_none()
+        except SQLAlchemyDatabaseError as exc:
+            if _is_missing_relation_error(exc):
+                _warn_missing_review_tables(
+                    "fetch_source_proposal_by_id",
+                    (
+                        "app.unsorted_file_push_proposals",
+                    ),
+                )
+                return None
+            raise
+
+    if row is None:
+        return None
+
+    proposal = dict(row)
+    file_id = int(proposal.get("unsorted_file_id") or 0)
+    file_name = str(proposal.get("unsorted_file_name") or "").strip() or "file"
+    source_slug = str(proposal.get("source_slug") or proposal.get("person_slug") or "").strip().lower()
+    source_name = str(proposal.get("source_name") or "").strip() or source_slug
+    origin_text = str(proposal.get("unsorted_origin_text") or "").strip()
+    mime_type = str(proposal.get("unsorted_mime_type") or "").strip()
+    size_bytes = int(proposal.get("unsorted_size_bytes") or 0)
+    note_value = str(proposal.get("note") or "").strip()
+    blob_path = str(proposal.get("unsorted_blob_path") or "").strip()
+    media_url = media_path(blob_path) if blob_path else ""
+    preview_image_url = media_url if mime_type.lower().startswith("image/") else ""
+    base_markdown, proposed_markdown = _build_source_push_review_markdown(
+        unsorted_file_id=file_id,
+        file_name=file_name,
+        source_slug=source_slug,
+        source_name=source_name,
+        origin_text=origin_text,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        note=note_value,
+        media_url=media_url,
+    )
+    proposal["person_slug"] = source_slug
+    proposal["base_payload"] = base_markdown
+    proposal["proposed_payload"] = proposed_markdown
+    proposal["base_markdown"] = base_markdown
+    proposal["proposed_markdown"] = proposed_markdown
+    proposal["base_image_url"] = ""
+    proposal["proposed_image_url"] = preview_image_url
+    proposal["person_id"] = 0
+    proposal["current_person_slug"] = ""
+    proposal["current_person_id"] = 0
+    proposal["current_name"] = source_name
+    proposal["current_title"] = "Source"
+    proposal["current_bucket"] = ""
+    proposal["current_image_url"] = preview_image_url
+    proposal["current_markdown"] = base_markdown
+    proposal["current_tags_json"] = "[]"
+    proposal["events_json"] = "[]"
+    proposal["proposal_source"] = PROPOSAL_SOURCE_SOURCE
+    return proposal
+
+
+def _accept_source_push_proposal(
+    session,
+    *,
+    proposal: Dict[str, object],
+    reviewer_user_id: int,
+) -> str:
+    proposal_id = int(proposal.get("id") or 0)
+    unsorted_file_id = int(proposal.get("unsorted_file_id") or 0)
+    source_id = int(proposal.get("source_id") or 0)
+    source_slug = str(proposal.get("source_slug") or proposal.get("person_slug") or "").strip().lower()
+    if proposal_id <= 0:
+        raise ValueError("Proposal id is missing.")
+    if unsorted_file_id <= 0:
+        raise ValueError("Unsorted file id is missing from proposal.")
+    if source_id <= 0 and not source_slug:
+        raise ValueError("Target source is missing from proposal.")
+
+    source_row = None
+    if source_id > 0:
+        source_row = session.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    slug,
+                    bucket,
+                    folder_prefix,
+                    max_bytes
+                FROM app.sources_cards
+                WHERE id = :source_id
+                LIMIT 1
+                """
+            ),
+            {"source_id": source_id},
+        ).mappings().one_or_none()
+    if source_row is None and source_slug:
+        source_row = session.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    slug,
+                    bucket,
+                    folder_prefix,
+                    max_bytes
+                FROM app.sources_cards
+                WHERE lower(slug) = :slug
+                LIMIT 1
+                """
+            ),
+            {"slug": source_slug},
+        ).mappings().one_or_none()
+    if source_row is None:
+        raise ValueError("Target source was not found.")
+
+    resolved_source_id = int(source_row.get("id") or 0)
+    resolved_source_slug = str(source_row.get("slug") or source_slug).strip().lower()
+    source_bucket = str(source_row.get("bucket") or "").strip()
+    source_folder_prefix = str(source_row.get("folder_prefix") or "").strip().strip("/")
+    source_max_bytes = max(1, int(source_row.get("max_bytes") or 0))
+    if resolved_source_id <= 0 or not resolved_source_slug:
+        raise ValueError("Target source metadata is invalid.")
+    if not source_bucket:
+        raise ValueError("Target source bucket is missing.")
+
+    unsorted_row = session.execute(
+        text(
+            """
+            SELECT
+                id,
+                bucket,
+                blob_path,
+                file_name,
+                mime_type,
+                size_bytes,
+                COALESCE(origin_text, '') AS origin_text
+            FROM app.unsorted_files
+            WHERE id = :unsorted_file_id
+            LIMIT 1
+            """
+        ),
+        {"unsorted_file_id": unsorted_file_id},
+    ).mappings().one_or_none()
+    if unsorted_row is None:
+        raise ValueError("Selected unsorted file was not found.")
+    if not str(unsorted_row.get("blob_path") or "").strip():
+        raise ValueError("Selected unsorted file is missing its storage path.")
+
+    origin_value = (
+        str(unsorted_row.get("origin_text") or "").strip()
+        or str(proposal.get("unsorted_origin_text") or "").strip()
+        or f"unsorted-file://{unsorted_file_id}"
+    )
+
+    uploaded_blob_refs: List[Tuple[str, str]] = []
+    try:
+        _store_unsorted_files_for_source(
+            session,
+            source_id=resolved_source_id,
+            source_slug=resolved_source_slug,
+            bucket_value=source_bucket,
+            folder_prefix=source_folder_prefix,
+            max_bytes=source_max_bytes,
+            unsorted_files=[dict(unsorted_row)],
+            origin_urls=[origin_value],
+            actor_user_id=int(reviewer_user_id),
+            uploaded_blob_refs=uploaded_blob_refs,
+        )
+        session.execute(
+            text(
+                """
+                UPDATE app.unsorted_file_push_proposals
+                SET status = 'accepted',
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = :proposal_id
+                """
+            ),
+            {"proposal_id": proposal_id},
+        )
+    except Exception:
+        for bucket_name, blob_name in uploaded_blob_refs:
+            try:
+                get_bucket(bucket_name).blob(blob_name).delete()
+            except Exception:
+                continue
+        raise
+
+    return resolved_source_slug
+
+
 def _fetch_proposal_by_id(
     proposal_id: int,
     proposal_source: str = PROPOSAL_SOURCE_PEOPLE,
 ) -> Dict[str, object] | None:
     source = _normalize_proposal_source(proposal_source)
+    if source == PROPOSAL_SOURCE_SOURCE:
+        return _fetch_source_proposal_by_id(proposal_id)
     if source == PROPOSAL_SOURCE_THEORY:
         return _fetch_theory_proposal_by_id(proposal_id)
     return _fetch_people_proposal_by_id(proposal_id)
@@ -2509,6 +2921,8 @@ def _fetch_proposal_events(
 ) -> List[Dict[str, object]]:
     _ensure_local_db()
     source = _normalize_proposal_source(proposal_source)
+    if source == PROPOSAL_SOURCE_SOURCE:
+        return []
     events_table = "app.theory_change_events" if source == PROPOSAL_SOURCE_THEORY else "app.people_change_events"
     with readonly_session_scope() as session:
         try:
@@ -3015,6 +3429,8 @@ def _render_empty_diff(message: str) -> str:
 
 def _scope_dataset_title(scope: str) -> str:
     normalized_scope = _normalize_proposal_scope(scope)
+    if normalized_scope == PROPOSAL_SCOPE_SOURCE:
+        return "Source"
     if normalized_scope == PROPOSAL_SCOPE_CARD:
         return "Card"
     if normalized_scope == PROPOSAL_SCOPE_CARD_ARTICLE:
@@ -3024,6 +3440,8 @@ def _scope_dataset_title(scope: str) -> str:
 
 def _scope_dataset_prefix(scope: str) -> str:
     normalized_scope = _normalize_proposal_scope(scope)
+    if normalized_scope == PROPOSAL_SCOPE_SOURCE:
+        return "S"
     if normalized_scope == PROPOSAL_SCOPE_CARD:
         return "C"
     if normalized_scope == PROPOSAL_SCOPE_CARD_ARTICLE:
@@ -3179,6 +3597,7 @@ def _render_proposal_meta(
     _ = dataset_entry
     scope = _normalize_proposal_scope(proposal.get("proposal_scope"))
     scope_title = _scope_dataset_title(scope)
+    proposal_source = _normalize_proposal_source(proposal.get("proposal_source"))
     source_label = _proposal_source_label(str(proposal.get("proposal_source") or PROPOSAL_SOURCE_PEOPLE))
     proposer_user_id = int(proposal.get("proposer_user_id") or 0)
     proposer_identity = _format_username_with_email(
@@ -3187,18 +3606,36 @@ def _render_proposal_meta(
         proposer_user_id,
     )
     heading = f"### {scope_title} proposal"
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        heading = "### Source push proposal"
     created_raw = str(proposal.get("created_at") or "").strip() or "n/a"
     created_ago = _format_elapsed_ago(proposal.get("created_at"))
     created_line = f"`{created_raw}`" if created_raw else "`n/a`"
     if created_ago:
         created_line = f"{created_line} ({created_ago})"
+    slug_value = str(proposal.get("person_slug") or "").strip()
+    slug_label = "Profile"
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        slug_label = "Target source"
     lines = [
         heading,
         f"- **Source:** `{source_label}`",
-        f"- **Profile:** `{proposal.get('person_slug')}`",
+        f"- **{slug_label}:** `{slug_value}`",
         f"- **Proposer:** `{proposer_identity}`",
         f"- **Created:** {created_line}",
     ]
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        file_id = int(proposal.get("unsorted_file_id") or 0)
+        file_name = str(proposal.get("unsorted_file_name") or "").strip() or "file"
+        source_name = str(proposal.get("source_name") or "").strip()
+        if file_id > 0:
+            lines.append(f"- **Unsorted file id:** `{file_id}`")
+        lines.append(f"- **Unsorted file name:** `{file_name}`")
+        if source_name:
+            lines.append(f"- **Target source name:** `{source_name}`")
+        origin_text = str(proposal.get("unsorted_origin_text") or "").strip()
+        if origin_text:
+            lines.append(f"- **Origin/description:** {origin_text}")
 
     note = (proposal.get("note") or "").strip()
     if note:
@@ -5289,7 +5726,7 @@ def _build_review_slug_filter_update(
     proposals: Sequence[Dict[str, object]] | None = None,
 ) -> tuple[gr.update, str]:
     normalized_slug = (selected_slug or "").strip().lower()
-    choices: List[Tuple[str, str]] = [("All profiles", "")]
+    choices: List[Tuple[str, str]] = [("All slugs", "")]
     known_slugs = {""}
     source_rows = list(proposals) if proposals is not None else _fetch_change_proposals(limit=2000)
     for proposal in source_rows:
@@ -5300,7 +5737,7 @@ def _build_review_slug_filter_update(
         known_slugs.add(slug)
 
     if normalized_slug and normalized_slug not in known_slugs:
-        choices.append((f"{normalized_slug} (missing profile)", normalized_slug))
+        choices.append((f"{normalized_slug} (missing slug)", normalized_slug))
         known_slugs.add(normalized_slug)
 
     selected_value = normalized_slug if normalized_slug in known_slugs else ""
@@ -5310,7 +5747,7 @@ def _build_review_slug_filter_update(
 def _review_summary(slug_filter: str) -> str:
     normalized_slug = (slug_filter or "").strip().lower()
     if not normalized_slug:
-        return "Reviewing tracked proposals for all profiles."
+        return "Reviewing tracked proposals for all slugs."
     return f"Reviewing tracked proposals for slug `{normalized_slug}`."
 
 
@@ -6677,6 +7114,41 @@ def _accept_admin_proposal(
         panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
         return (f"⚠️ Proposal #{proposal_id_int} is already `{status or 'unknown'}`.", *panel)
 
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        admin_user_id = _resolve_request_user_id(user)
+        if admin_user_id <= 0:
+            panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
+            return ("❌ Could not resolve reviewer user id.", *panel)
+
+        _ensure_local_db()
+        try:
+            with session_scope() as session:
+                source_slug = _accept_source_push_proposal(
+                    session,
+                    proposal=proposal,
+                    reviewer_user_id=admin_user_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
+            return (f"❌ Cannot accept source proposal #{proposal_id_int}: {exc}", *panel)
+
+        next_pending_for_source = _next_pending_proposal_for_slug(
+            source_slug,
+            slug_filter=slug_filter,
+            exclude_proposal_id=proposal_id_int,
+            proposal_source=proposal_source,
+        )
+        panel = _build_admin_panel(
+            next_pending_for_source,
+            slug_filter=slug_filter,
+            prioritize_proposal_id=next_pending_for_source,
+            review_view_mode=review_view_mode,
+        )
+        return (
+            f"✅ Source proposal #{proposal_id_int} accepted and file moved into source `{source_slug}`.",
+            *panel,
+        )
+
     person_slug = str(proposal.get("person_slug") or "").strip().lower()
     scope = _normalize_proposal_scope(proposal.get("proposal_scope"))
     person = _fetch_profile_for_source(person_slug, proposal_source)
@@ -7164,6 +7636,32 @@ def _decline_admin_proposal(
             *panel,
         )
 
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        _ensure_local_db()
+        with session_scope() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE app.unsorted_file_push_proposals
+                    SET status = 'declined',
+                        reviewed_at = CURRENT_TIMESTAMP
+                    WHERE id = :proposal_id
+                    """
+                ),
+                {
+                    "proposal_id": proposal_id_int,
+                },
+            )
+
+        panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
+        return (
+            f"✅ Source proposal #{proposal_id_int} declined.",
+            gr.update(visible=False),
+            gr.update(value=""),
+            "",
+            *panel,
+        )
+
     _ensure_local_db()
     with session_scope() as session:
         proposals_table = (
@@ -7241,6 +7739,13 @@ def _report_user_from_proposal(
         panel = _build_admin_panel(slug_filter=slug_filter, review_view_mode=review_view_mode)
         return (
             "❌ Proposal not found.",
+            report_reason,
+            *panel,
+        )
+    if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
+        return (
+            "❌ Reporting is not supported for source proposals.",
             report_reason,
             *panel,
         )
@@ -7660,8 +8165,8 @@ def make_people_review_app() -> gr.Blocks:
                     scale=1,
                 )
                 admin_card_selector = gr.Dropdown(
-                    label="Profile slug being reviewed",
-                    choices=[("All profiles", "")],
+                    label="Slug being reviewed",
+                    choices=[("All slugs", "")],
                     value="",
                     allow_custom_value=False,
                     interactive=True,

@@ -208,7 +208,7 @@ def make_unsorted_files_app() -> gr.Blocks:
 
                     with gr.Row(elem_id="unsorted-actions-row"):
                         too_redacted_btn = gr.Button(
-                            "Too redacted",
+                            "Too redacted (0)",
                             variant="secondary",
                             elem_id="unsorted-too-redacted-btn",
                         )
@@ -228,25 +228,26 @@ def make_unsorted_files_app() -> gr.Blocks:
 
                     action_status = gr.Markdown(value="", visible=False, elem_id="unsorted-action-status")
 
-        with gr.Column(elem_id="unsorted-push-modal", visible=False) as push_modal:
-            gr.Markdown("### Push to source")
-            push_status = gr.Markdown(value="", visible=False, elem_id="unsorted-push-status")
-            push_source_dropdown = gr.Dropdown(
-                label="Select source",
-                choices=[],
-                value=None,
-                interactive=False,
-                elem_id="unsorted-push-source-selector",
-            )
-            push_note = gr.Textbox(
-                label="Optional note",
-                placeholder="Reason or context for the push proposal...",
-                lines=2,
-                elem_id="unsorted-push-note",
-            )
-            with gr.Row(elem_id="unsorted-push-actions"):
-                push_confirm_btn = gr.Button("Submit proposal", variant="primary")
-                push_cancel_btn = gr.Button("Cancel", variant="secondary")
+        with gr.Column(elem_id="unsorted-push-modal-overlay", visible=False) as push_modal:
+            with gr.Column(elem_id="unsorted-push-modal"):
+                gr.Markdown("### Push to source")
+                push_status = gr.Markdown(value="", visible=False, elem_id="unsorted-push-status")
+                push_source_dropdown = gr.Dropdown(
+                    label="Select source",
+                    choices=[],
+                    value=None,
+                    interactive=False,
+                    elem_id="unsorted-push-source-selector",
+                )
+                push_note = gr.Textbox(
+                    label="Optional note",
+                    placeholder="Reason or context for the push proposal...",
+                    lines=2,
+                    elem_id="unsorted-push-note",
+                )
+                with gr.Row(elem_id="unsorted-push-actions"):
+                    push_confirm_btn = gr.Button("Submit proposal", variant="primary")
+                    push_cancel_btn = gr.Button("Cancel", variant="secondary")
 
         with gr.Column(elem_id="unsorted-tags-modal", visible=False) as tags_modal:
             gr.Markdown("### Add tags")
@@ -265,7 +266,11 @@ def make_unsorted_files_app() -> gr.Blocks:
                 elem_id="unsorted-tags-note",
             )
             with gr.Row(elem_id="unsorted-tags-actions"):
-                tags_confirm_btn = gr.Button("Submit proposal", variant="primary")
+                tags_confirm_btn = gr.Button(
+                    "Submit proposal",
+                    variant="primary",
+                    elem_id="unsorted-tags-submit-btn",
+                )
                 tags_cancel_btn = gr.Button("Cancel", variant="secondary")
 
         app.load(timed_page_load("/unsorted-files", _header_unsorted_files), outputs=[hdr])

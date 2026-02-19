@@ -91,8 +91,8 @@ def make_review_display_app() -> gr.Blocks:
                     scale=1,
                 )
                 admin_card_selector = gr.Dropdown(
-                    label="Profile slug being reviewed",
-                    choices=[("All profiles", "")],
+                    label="Slug being reviewed",
+                    choices=[("All slugs", "")],
                     value="",
                     allow_custom_value=False,
                     interactive=True,

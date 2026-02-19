@@ -48,15 +48,17 @@
     const rowNodes = editor.querySelectorAll(`.${ROW_CLASS}`);
     rowNodes.forEach((rowNode) => {
       if (!(rowNode instanceof HTMLElement)) return;
+      const keyFromAttr = rowNode.dataset.originKey || "";
       const nameFromAttr = rowNode.dataset.fileName || "";
       const nameNode = rowNode.querySelector(`.${NAME_CLASS}`);
-      const fileName = String(nameFromAttr || nameNode?.textContent || "").trim();
+      const displayName = String(nameFromAttr || nameNode?.textContent || "").trim();
+      const fileName = String(keyFromAttr || displayName).trim();
       const input = rowNode.querySelector(`.${INPUT_CLASS}`);
       const originValue =
         input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement
           ? String(input.value || "").trim()
           : "";
-      rows.push([fileName, originValue]);
+      rows.push([fileName, originValue, displayName]);
     });
     return rows;
   };
