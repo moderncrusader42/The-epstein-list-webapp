@@ -12,7 +12,7 @@ def make_login_page() -> gr.Blocks:
         head=with_light_mode_head(None),
     ) as login_page:
         hdr = gr.HTML()
-        gr.Markdown("## Welcome\nThis is the public page. Sign in to continue.")
+        gr.Markdown("## Welcome\nYou can browse public pages as a guest. Sign in for contribution privileges.")
         gr.Markdown("- Public information\n- Marketing copy\n- Anything you want here")
 
         login_page.load(timed_page_load("/", _header_root), outputs=[hdr])

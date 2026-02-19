@@ -122,10 +122,36 @@
   background: #ffffff;
   padding: 0.68rem 0.78rem;
   min-height: 280px;
+  overflow: auto;
+  position: relative;
 }
 
 #sources-create-summary-preview .prose {
   max-width: none !important;
+  margin: 0 !important;
+}
+
+#sources-create-summary-preview .sources-visual-editor {
+  min-height: 100%;
+}
+
+#sources-create-summary-preview .sources-visual-editor--active {
+  cursor: text;
+}
+
+#sources-create-summary-preview .sources-visual-editor--active:focus {
+  outline: 2px solid #93c5fd;
+  outline-offset: 3px;
+  border-radius: 10px;
+}
+
+#sources-create-summary-preview[data-create-preview-empty="1"]::before {
+  content: "Write markdown here";
+  color: #94a3b8;
+  position: absolute;
+  left: 0.78rem;
+  top: 0.7rem;
+  pointer-events: none;
 }
 
 #sources-create-page-actions {

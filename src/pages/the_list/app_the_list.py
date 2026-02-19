@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import gradio as gr
 
+from src.login_logic import get_user
 from src.page_timing import timed_page_load
 from src.pages.header import render_header, with_light_mode_head
 from src.pages.the_list.core_the_list import (
@@ -32,6 +33,7 @@ timing_logger = logging.getLogger("uvicorn.error")
 ASSETS_DIR = Path(__file__).resolve().parent
 CSS_PATH = ASSETS_DIR / "css" / "the_list_page.css"
 TAG_FILTER_JS_PATH = ASSETS_DIR / "js" / "the_list_tag_filter.js"
+PROPOSAL_SIGNIN_REQUIRED_MESSAGE = "You need to sign in before submitting a proposal"
 
 
 def _log_timing(event_name: str, start: float, **fields: object) -> None:
@@ -64,6 +66,20 @@ def _load_tag_filter_js() -> str:
     if not script:
         return ""
     return f"<script>\n{script}\n</script>"
+
+
+def _render_proposal_guard_toast(message: str) -> str:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return ""
+    return f"<div class='proposal-signin-toast'>{html.escape(normalized)}</div>"
+
+
+def _open_people_create_page(request: gr.Request):
+    user = get_user(request) or {}
+    if not user:
+        return False, _render_proposal_guard_toast(PROPOSAL_SIGNIN_REQUIRED_MESSAGE)
+    return True, ""
 
 
 def _versioned_media_url(image_url: object, image_version: object) -> str:
@@ -268,6 +284,7 @@ def make_the_list_app() -> gr.Blocks:
         hdr = gr.HTML()
 
         with gr.Column(elem_id="people-shell"):
+            create_redirect_state = gr.State(False)
             with gr.Row(elem_id="people-title-row"):
                 title_md = gr.HTML("<h2>The List</h2>", elem_id="people-title")
                 with gr.Column(elem_id="people-filter-row", visible=True, scale=0, min_width=210) as tag_filter_row:
@@ -282,13 +299,17 @@ def make_the_list_app() -> gr.Blocks:
                         container=False,
                         elem_id="people-tag-filter",
                     )
-                gr.HTML(
-                    "<a class='the-list-create-profile-btn' href='/people-create/' aria-label='Create new card and article proposal'>+</a>",
-                    elem_id="the-list-create-profile-link",
+                create_profile_btn = gr.Button(
+                    "+",
+                    variant="secondary",
+                    elem_id="the-list-create-profile-trigger",
+                    scale=0,
+                    min_width=34,
                 )
 
             tag_filter_selection_state = gr.State([])
             cards_html = gr.HTML(elem_id="people-cards")
+            proposal_guard_toast = gr.HTML(value="", elem_id="proposal-signin-toast-root")
 
         app.load(timed_page_load("/the-list", _header_the_list), outputs=[hdr])
         app.load(
@@ -310,6 +331,18 @@ def make_the_list_app() -> gr.Blocks:
             ),
             inputs=[tag_filter, tag_filter_selection_state],
             outputs=[tag_filter, tag_filter_selection_state, cards_html],
+            show_progress=False,
+        )
+
+        create_profile_btn.click(
+            timed_page_load("/the-list", _open_people_create_page, label="open_people_create_page"),
+            outputs=[create_redirect_state, proposal_guard_toast],
+            show_progress=False,
+        ).then(
+            fn=None,
+            inputs=[create_redirect_state],
+            outputs=None,
+            js="(shouldRedirect) => { if (shouldRedirect) { window.location.assign('/people-create/'); } }",
             show_progress=False,
         )
 

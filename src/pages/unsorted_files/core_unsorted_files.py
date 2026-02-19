@@ -1578,7 +1578,7 @@ def _load_unsorted_files_page(request: gr.Request):
 
     status_message = ""
     if not user:
-        status_message = "You must sign in to review unsorted files."
+        status_message = "Viewing as guest: sign in to submit review actions."
     elif not can_submit:
         status_message = "Your `base_user` privilege is currently disabled, so actions are blocked."
 

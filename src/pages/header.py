@@ -530,7 +530,7 @@ def _header_html(user: Optional[dict], path: str, request: Any) -> str:
             """.strip()
         account_html = google_btn
 
-    # Left-side: site logo (always) and optional Protected link (when logged in)
+    # Left-side: site logo and navigation links
     logo_html = (
         '<a href="/" class="site-logo" aria-label="Home">'
         f'<img src="{LOGO_URL}" class="logo-img" alt="The List" />'
@@ -538,54 +538,54 @@ def _header_html(user: Optional[dict], path: str, request: Any) -> str:
         '</a>'
     )
 
-    if user:
-        step_start = time.perf_counter()
-        nav_links = resolve_nav_links(user.get("privileges"))
-        _log_timing("header_html.resolve_nav_links", step_start, nav_links=len(nav_links))
-        link_by_key = {link.key: link for link in nav_links}
-        grouped_sections: list[tuple[str, list[str]]] = []
-        used_keys: set[str] = set()
-        for section_label, keys in _SECTION_ORDER:
-            items: list[str] = []
-            for key in keys:
-                link = link_by_key.get(key)
-                if not link:
-                    continue
-                used_keys.add(key)
-                label = _LABEL_OVERRIDES.get(link.key, link.label)
-                is_active = link.key == active_key
-                active_class = " is-active" if is_active else ""
-                aria_current = ' aria-current="page"' if is_active else ""
-                icon_markup = _nav_icon_markup(link.key, label)
-                items.append(
-                    f'<a href="{html.escape(link.path)}" class="{html.escape(link.css_class)} sidebar-link{active_class}"'
-                    f'{aria_current} title="{html.escape(label)}">'
-                    f'{icon_markup}<span class="sidebar-link-text">{html.escape(label)}</span></a>'
-                )
-            if items:
-                grouped_sections.append((section_label, items))
-
-        remaining_links: list[str] = []
-        for link in nav_links:
-            if link.key in used_keys:
+    step_start = time.perf_counter()
+    user_privileges = user.get("privileges") if isinstance(user, dict) else None
+    nav_links = resolve_nav_links(user_privileges)
+    _log_timing("header_html.resolve_nav_links", step_start, nav_links=len(nav_links))
+    link_by_key = {link.key: link for link in nav_links}
+    grouped_sections: list[tuple[str, list[str]]] = []
+    used_keys: set[str] = set()
+    for section_label, keys in _SECTION_ORDER:
+        items: list[str] = []
+        for key in keys:
+            link = link_by_key.get(key)
+            if not link:
                 continue
+            used_keys.add(key)
             label = _LABEL_OVERRIDES.get(link.key, link.label)
             is_active = link.key == active_key
             active_class = " is-active" if is_active else ""
             aria_current = ' aria-current="page"' if is_active else ""
             icon_markup = _nav_icon_markup(link.key, label)
-            remaining_links.append(
+            items.append(
                 f'<a href="{html.escape(link.path)}" class="{html.escape(link.css_class)} sidebar-link{active_class}"'
                 f'{aria_current} title="{html.escape(label)}">'
                 f'{icon_markup}<span class="sidebar-link-text">{html.escape(label)}</span></a>'
             )
-        if remaining_links:
-            grouped_sections.append((_DEFAULT_SECTION, remaining_links))
+        if items:
+            grouped_sections.append((section_label, items))
 
-        section_markup = []
-        for section_label, items in grouped_sections:
-            section_markup.append(
-                f"""
+    remaining_links: list[str] = []
+    for link in nav_links:
+        if link.key in used_keys:
+            continue
+        label = _LABEL_OVERRIDES.get(link.key, link.label)
+        is_active = link.key == active_key
+        active_class = " is-active" if is_active else ""
+        aria_current = ' aria-current="page"' if is_active else ""
+        icon_markup = _nav_icon_markup(link.key, label)
+        remaining_links.append(
+            f'<a href="{html.escape(link.path)}" class="{html.escape(link.css_class)} sidebar-link{active_class}"'
+            f'{aria_current} title="{html.escape(label)}">'
+            f'{icon_markup}<span class="sidebar-link-text">{html.escape(label)}</span></a>'
+        )
+    if remaining_links:
+        grouped_sections.append((_DEFAULT_SECTION, remaining_links))
+
+    section_markup = []
+    for section_label, items in grouped_sections:
+        section_markup.append(
+            f"""
 <details class="nav-section" open>
   <summary class="nav-section-title">{html.escape(section_label)}</summary>
   <div class="nav-section-links">
@@ -593,10 +593,8 @@ def _header_html(user: Optional[dict], path: str, request: Any) -> str:
   </div>
 </details>
 """.strip()
-            )
-        nav_markup = "\n".join(section_markup)
-    else:
-        nav_markup = ""
+        )
+    nav_markup = "\n".join(section_markup)
 
     #in the <div><strong></strong> we could put some cool text or maybe a logo
     html_value = f"""{css_block}

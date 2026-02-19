@@ -29,6 +29,7 @@ PUBLIC_PAGE_KEYS: tuple[str, ...] = (
     "the-list",
     "theories",
     "sources",
+    "unsorted-files",
 )
 
 PAGE_REGISTRY: dict[str, PageLink] = {

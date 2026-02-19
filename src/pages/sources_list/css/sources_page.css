@@ -102,6 +102,32 @@ button#sources-create-trigger:focus-visible {
   border-color: #93c5fd !important;
 }
 
+#proposal-signin-toast-root {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2200;
+  width: min(520px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+#proposal-signin-toast-root .html-container,
+#proposal-signin-toast-root .prose {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+#proposal-signin-toast-root .proposal-signin-toast {
+  padding: 0.8rem 0.95rem;
+  border-radius: 0.75rem;
+  border: 1px solid #fda4af;
+  background: #fff1f2;
+  color: #9f1239;
+  font-weight: 600;
+  line-height: 1.35;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
 #sources-tag-filter .wrap {
   position: relative;
   min-height: 32px;

@@ -31,6 +31,7 @@ CREATE_PAGE_CSS_PATH = ASSETS_DIR / "css" / "source_create_page.css"
 CREATE_TAGS_JS_PATH = ASSETS_DIR / "js" / "sources_create_tags.js"
 FILE_ORIGINS_JS_PATH = ASSETS_DIR / "js" / "sources_file_origins_inline.js"
 COVER_IMAGE_CROP_JS_PATH = ASSETS_DIR / "js" / "sources_cover_image_crop.js"
+CREATE_MARKDOWN_INLINE_JS_PATH = ASSETS_DIR / "js" / "sources_create_markdown_inline.js"
 
 
 def _read_asset(path: Path) -> str:
@@ -216,6 +217,7 @@ def make_sources_create_app() -> gr.Blocks:
             _load_script(CREATE_TAGS_JS_PATH),
             _load_script(FILE_ORIGINS_JS_PATH),
             _load_script(COVER_IMAGE_CROP_JS_PATH),
+            _load_script(CREATE_MARKDOWN_INLINE_JS_PATH),
         )
         if script
     )

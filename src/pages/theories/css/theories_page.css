@@ -191,6 +191,45 @@
   text-decoration: none;
 }
 
+#the-list-create-profile-trigger {
+  flex: 0 0 auto !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  align-self: center;
+  margin: 31px 0 0 0 !important;
+}
+
+button#the-list-create-profile-trigger,
+button#the-list-create-profile-trigger.secondary,
+button#the-list-create-profile-trigger.lg,
+button#the-list-create-profile-trigger.lg.secondary {
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  border-radius: 999px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: #bfd5f6 !important;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #1f2937 !important;
+  font-size: 1.25rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  padding: 0 !important;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12) !important;
+}
+
+button#the-list-create-profile-trigger:hover,
+button#the-list-create-profile-trigger:focus-visible {
+  background: #eff6ff !important;
+  background-color: #eff6ff !important;
+  border-color: #93c5fd !important;
+}
+
 #people-tag-filter .wrap {
   position: relative;
   min-height: 30px;
@@ -1048,6 +1087,32 @@ button#the-list-card-image-plus-btn:focus-visible {
   pointer-events: none;
 }
 
+#proposal-signin-toast-root {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2200;
+  width: min(520px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+#proposal-signin-toast-root .html-container,
+#proposal-signin-toast-root .prose {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+#proposal-signin-toast-root .proposal-signin-toast {
+  padding: 0.8rem 0.95rem;
+  border-radius: 0.75rem;
+  border: 1px solid #fda4af;
+  background: #fff1f2;
+  color: #9f1239;
+  font-weight: 600;
+  line-height: 1.35;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
 .the-list-toast {
   width: min(500px, calc(100vw - 2rem));
   padding: 0.8rem 0.95rem;
@@ -1687,7 +1752,8 @@ button#the-list-admin-decline-btn {
     min-width: 0;
   }
 
-  #the-list-create-profile-link {
+  #the-list-create-profile-link,
+  #the-list-create-profile-trigger {
     margin-left: auto;
   }
 
