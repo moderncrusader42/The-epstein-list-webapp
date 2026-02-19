@@ -365,7 +365,7 @@ def make_unsorted_files_app() -> gr.Blocks:
 
         too_redacted_btn.click(
             timed_page_load("/unsorted-files", _mark_unsorted_too_redacted, label="mark_unsorted_too_redacted"),
-            inputs=[current_file_id_state, current_index_state],
+            inputs=[current_file_id_state, current_index_state, files_state],
             outputs=[
                 action_status,
                 files_state,
@@ -389,7 +389,7 @@ def make_unsorted_files_app() -> gr.Blocks:
 
         useless_btn.click(
             timed_page_load("/unsorted-files", _mark_unsorted_useless, label="mark_unsorted_useless"),
-            inputs=[current_file_id_state, current_index_state],
+            inputs=[current_file_id_state, current_index_state, files_state],
             outputs=[
                 action_status,
                 files_state,
@@ -413,7 +413,7 @@ def make_unsorted_files_app() -> gr.Blocks:
 
         push_to_source_btn.click(
             timed_page_load("/unsorted-files", _open_unsorted_push_modal, label="open_unsorted_push_modal"),
-            inputs=[current_file_id_state],
+            inputs=[current_file_id_state, current_index_state, files_state],
             outputs=[push_modal, push_status, push_source_dropdown, push_note],
             show_progress=False,
         )
@@ -430,7 +430,7 @@ def make_unsorted_files_app() -> gr.Blocks:
                 _submit_unsorted_push_to_source,
                 label="submit_unsorted_push_to_source",
             ),
-            inputs=[current_file_id_state, push_source_dropdown, push_note, current_index_state],
+            inputs=[current_file_id_state, push_source_dropdown, push_note, current_index_state, files_state],
             outputs=[
                 action_status,
                 push_modal,
@@ -458,7 +458,7 @@ def make_unsorted_files_app() -> gr.Blocks:
 
         tag_file_btn.click(
             timed_page_load("/unsorted-files", _open_unsorted_tags_modal, label="open_unsorted_tags_modal"),
-            inputs=[current_file_id_state],
+            inputs=[current_file_id_state, current_index_state, files_state],
             outputs=[tags_modal, tags_status, tags_input, tags_editor, tags_note],
             show_progress=False,
         )
@@ -475,7 +475,7 @@ def make_unsorted_files_app() -> gr.Blocks:
                 _submit_unsorted_tags_proposal,
                 label="submit_unsorted_tags_proposal",
             ),
-            inputs=[current_file_id_state, tags_input, tags_note, current_index_state],
+            inputs=[current_file_id_state, tags_input, tags_note, current_index_state, files_state],
             outputs=[
                 action_status,
                 tags_modal,

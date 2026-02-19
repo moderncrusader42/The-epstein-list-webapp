@@ -106,6 +106,8 @@ PROPOSAL_SCOPE_SOURCE = "source"
 PROPOSAL_SOURCE_PEOPLE = "people"
 PROPOSAL_SOURCE_THEORY = "theory"
 PROPOSAL_SOURCE_SOURCE = "source"
+SOURCE_PROPOSAL_TYPE_PUSH = "push"
+SOURCE_PROPOSAL_TYPE_TAGS = "tags"
 _DIFF_TOKEN_RE = re.compile(r"\s+|[^\s]+")
 _MARKDOWN_LINE_PREFIX_RE = re.compile(r"^(\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+))(.*)$")
 _TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
@@ -812,30 +814,52 @@ def _proposal_source_label(source: str) -> str:
     return "PEOPLE"
 
 
-def _proposal_choice_value(source: str, proposal_id: object) -> str:
+def _normalize_source_proposal_type(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == SOURCE_PROPOSAL_TYPE_TAGS:
+        return SOURCE_PROPOSAL_TYPE_TAGS
+    return SOURCE_PROPOSAL_TYPE_PUSH
+
+
+def _proposal_choice_value(source: str, proposal_id: object, source_proposal_type: object = "") -> str:
     normalized_source = _normalize_proposal_source(source)
     proposal_id_text = str(proposal_id or "").strip()
-    if proposal_id_text.isdigit():
-        return f"{normalized_source}:{proposal_id_text}"
-    return ""
+    if not proposal_id_text.isdigit():
+        return ""
+    if normalized_source == PROPOSAL_SOURCE_SOURCE:
+        normalized_type = _normalize_source_proposal_type(source_proposal_type)
+        return f"{normalized_source}:{normalized_type}:{proposal_id_text}"
+    return f"{normalized_source}:{proposal_id_text}"
 
 
-def _parse_proposal_choice_value(raw_value: object) -> tuple[str, int] | None:
+def _parse_proposal_choice_value(raw_value: object) -> tuple[str, int, str] | None:
     text_value = str(raw_value or "").strip()
     if not text_value:
         return None
 
     if ":" not in text_value:
         if text_value.isdigit():
-            return PROPOSAL_SOURCE_PEOPLE, int(text_value)
+            return PROPOSAL_SOURCE_PEOPLE, int(text_value), ""
         return None
 
-    raw_source, raw_id = text_value.split(":", 1)
+    parts = text_value.split(":")
+    if len(parts) == 2:
+        raw_source, raw_id = parts
+        raw_type = ""
+    elif len(parts) == 3:
+        raw_source, raw_type, raw_id = parts
+    else:
+        return None
     source = _normalize_proposal_source(raw_source)
+    source_proposal_type = (
+        _normalize_source_proposal_type(raw_type)
+        if source == PROPOSAL_SOURCE_SOURCE and str(raw_type or "").strip()
+        else ""
+    )
     proposal_id_text = str(raw_id or "").strip()
     if not proposal_id_text.isdigit():
         return None
-    return source, int(proposal_id_text)
+    return source, int(proposal_id_text), source_proposal_type
 
 
 def _parse_tags_input(raw_value: object) -> List[str]:
@@ -2023,6 +2047,65 @@ def _build_source_push_review_markdown(
     return ("\n".join(current_lines), "\n".join(proposed_lines))
 
 
+def _format_tags_markdown(tags: Sequence[str]) -> str:
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for raw_tag in tags:
+        normalized = _normalize_tag(str(raw_tag))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+    if not cleaned:
+        return "(none)"
+    return ", ".join(f"`{tag}`" for tag in cleaned)
+
+
+def _build_source_tags_review_markdown(
+    *,
+    unsorted_file_id: int,
+    file_name: str,
+    origin_text: str,
+    mime_type: str,
+    size_bytes: int,
+    current_tags: Sequence[str],
+    proposed_tags: Sequence[str],
+    note: str,
+    media_url: str,
+) -> tuple[str, str]:
+    safe_file_name = (file_name or "").strip() or f"file-{max(0, int(unsorted_file_id or 0))}"
+    safe_origin = (origin_text or "").strip() or "n/a"
+    safe_mime = (mime_type or "").strip() or "unknown"
+    safe_size = max(0, int(size_bytes or 0))
+    safe_note = (note or "").strip()
+    safe_media_url = (media_url or "").strip()
+    current_tags_md = _format_tags_markdown(current_tags)
+    proposed_tags_md = _format_tags_markdown(proposed_tags)
+
+    current_lines = [
+        "## Current state",
+        f"- Unsorted file `#{max(0, int(unsorted_file_id or 0))}` tag proposal state.",
+        f"- File: `{safe_file_name}`",
+        f"- Mime type: `{safe_mime}`",
+        f"- File size (bytes): `{safe_size}`",
+        f"- Origin/description: {safe_origin}",
+        f"- Current accepted tags: {current_tags_md}",
+    ]
+
+    proposed_lines = [
+        "## Proposed state",
+        f"- Update tags for unsorted file `#{max(0, int(unsorted_file_id or 0))}`.",
+        f"- File: `{safe_file_name}`",
+        f"- Proposed tags: {proposed_tags_md}",
+    ]
+    if safe_note:
+        proposed_lines.append(f"- User note: {safe_note}")
+    if safe_media_url:
+        proposed_lines.append(f"- File URL: {safe_media_url}")
+
+    return ("\n".join(current_lines), "\n".join(proposed_lines))
+
+
 def _fetch_source_change_proposals(
     limit: int = 120,
     slug_filter: str = "",
@@ -2034,11 +2117,26 @@ def _fetch_source_change_proposals(
     normalized_slug = (slug_filter or "").strip().lower()
     max_limit = max(1, int(limit))
     with readonly_session_scope() as session:
+        has_push_proposals = _table_exists_in_search_path(session, "unsorted_file_push_proposals")
+        has_tag_proposals = _table_exists_in_search_path(session, "unsorted_file_tag_proposals")
+        has_tag_rows = has_tag_proposals and _table_exists_in_search_path(session, "unsorted_file_tag_proposal_tags")
+
+        if not has_push_proposals and not has_tag_proposals:
+            _warn_missing_review_tables(
+                "fetch_source_change_proposals",
+                (
+                    "app.unsorted_file_push_proposals",
+                    "app.unsorted_file_tag_proposals",
+                ),
+            )
+            return []
+
+        combined_rows: List[Dict[str, object]] = []
         try:
-            rows = session.execute(
-                text(
-                    """
-                    WITH ranked AS (
+            if has_push_proposals:
+                push_rows = session.execute(
+                    text(
+                        """
                         SELECT
                             p.id,
                             COALESCE(p.source_slug, '') AS person_slug,
@@ -2046,8 +2144,8 @@ def _fetch_source_change_proposals(
                             COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
                             COALESCE(proposer_user.email, '') AS proposer_email,
                             'source' AS proposal_scope,
-                            p.note,
-                            p.status,
+                            COALESCE(p.note, '') AS note,
+                            COALESCE(p.status, '') AS status,
                             p.created_at,
                             p.reviewed_at,
                             0::bigint AS reviewer_user_id,
@@ -2065,10 +2163,9 @@ def _fetch_source_change_proposals(
                             COALESCE(s.slug, p.source_slug, '') AS source_slug,
                             COALESCE(s.name, '') AS source_name,
                             p.source_id,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY 'source'
-                                ORDER BY p.id ASC
-                            ) AS scope_index
+                            '[]'::text AS current_tags_json,
+                            '[]'::text AS proposed_tags_json,
+                            :push_type AS source_proposal_type
                         FROM app.unsorted_file_push_proposals p
                         LEFT JOIN app.unsorted_files uf
                             ON uf.id = p.unsorted_file_id
@@ -2078,61 +2175,119 @@ def _fetch_source_change_proposals(
                             ON proposer_user.id = p.proposer_user_id
                         WHERE COALESCE(lower(p.status), '') NOT IN ('accepted', 'declined')
                           AND (:source_slug = '' OR COALESCE(lower(p.source_slug), '') = :source_slug)
-                    )
-                    SELECT
-                        id,
-                        person_slug,
-                        proposer_user_id,
-                        proposer_name,
-                        proposer_email,
-                        proposal_scope,
-                        note,
-                        status,
-                        created_at,
-                        reviewed_at,
-                        reviewer_user_id,
-                        reviewer_name,
-                        reviewer_email,
-                        review_note,
-                        report_triggered,
-                        unsorted_file_id,
-                        unsorted_file_name,
-                        unsorted_origin_text,
-                        unsorted_mime_type,
-                        unsorted_size_bytes,
-                        unsorted_bucket,
-                        unsorted_blob_path,
-                        source_slug,
-                        source_name,
-                        source_id,
-                        'S-' || lpad(scope_index::text, 3, '0') AS dataset_entry
-                    FROM ranked
-                    ORDER BY
-                        CASE status
-                            WHEN 'pending' THEN 0
-                            WHEN 'reported' THEN 1
-                            ELSE 2
-                        END,
-                        created_at ASC,
-                        id ASC
-                    LIMIT :limit
+                        """
+                    ),
+                    {
+                        "source_slug": normalized_slug,
+                        "push_type": SOURCE_PROPOSAL_TYPE_PUSH,
+                    },
+                ).mappings().all()
+                combined_rows.extend(dict(row) for row in push_rows)
+
+            if has_tag_proposals:
+                proposed_tags_select = (
                     """
-                ),
-                {"source_slug": normalized_slug, "limit": max_limit},
-            ).mappings().all()
+                    COALESCE(
+                        (
+                            SELECT json_agg(utpt.tag_label ORDER BY lower(utpt.tag_label), utpt.tag_label)
+                            FROM app.unsorted_file_tag_proposal_tags utpt
+                            WHERE utpt.proposal_id = p.id
+                        ),
+                        '[]'::json
+                    )::text AS proposed_tags_json,
+                    """
+                    if has_tag_rows
+                    else "COALESCE(p.tags_json, '[]') AS proposed_tags_json,"
+                )
+                tag_rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                            p.id,
+                            ('unsorted-file-' || p.unsorted_file_id::text) AS person_slug,
+                            p.proposer_user_id,
+                            COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
+                            COALESCE(proposer_user.email, '') AS proposer_email,
+                            'source' AS proposal_scope,
+                            COALESCE(p.note, '') AS note,
+                            COALESCE(p.status, '') AS status,
+                            p.created_at,
+                            p.reviewed_at,
+                            COALESCE(p.reviewer_user_id, 0)::bigint AS reviewer_user_id,
+                            COALESCE(NULLIF(reviewer_user.name, ''), reviewer_user.email, '') AS reviewer_name,
+                            COALESCE(reviewer_user.email, '') AS reviewer_email,
+                            COALESCE(p.review_note, '') AS review_note,
+                            0::integer AS report_triggered,
+                            p.unsorted_file_id,
+                            COALESCE(uf.file_name, '') AS unsorted_file_name,
+                            COALESCE(uf.origin_text, '') AS unsorted_origin_text,
+                            COALESCE(uf.mime_type, '') AS unsorted_mime_type,
+                            COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
+                            COALESCE(uf.bucket, '') AS unsorted_bucket,
+                            COALESCE(uf.blob_path, '') AS unsorted_blob_path,
+                            ('unsorted-file-' || p.unsorted_file_id::text) AS source_slug,
+                            ''::text AS source_name,
+                            0::bigint AS source_id,
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(prev.tags_json, '[]')
+                                    FROM app.unsorted_file_tag_proposals prev
+                                    WHERE prev.unsorted_file_id = p.unsorted_file_id
+                                      AND COALESCE(lower(prev.status), '') = 'accepted'
+                                    ORDER BY prev.reviewed_at DESC NULLS LAST, prev.created_at DESC, prev.id DESC
+                                    LIMIT 1
+                                ),
+                                '[]'
+                            ) AS current_tags_json,
+                            """
+                        + proposed_tags_select
+                        + """
+                            :tags_type AS source_proposal_type
+                        FROM app.unsorted_file_tag_proposals p
+                        LEFT JOIN app.unsorted_files uf
+                            ON uf.id = p.unsorted_file_id
+                        LEFT JOIN app."user" proposer_user
+                            ON proposer_user.id = p.proposer_user_id
+                        LEFT JOIN app."user" reviewer_user
+                            ON reviewer_user.id = p.reviewer_user_id
+                        WHERE COALESCE(lower(p.status), '') NOT IN ('accepted', 'declined')
+                          AND (
+                            :tag_slug_filter = ''
+                            OR ('unsorted-file-' || p.unsorted_file_id::text) = :tag_slug_filter
+                          )
+                        """
+                    ),
+                    {
+                        "tag_slug_filter": normalized_slug,
+                        "tags_type": SOURCE_PROPOSAL_TYPE_TAGS,
+                    },
+                ).mappings().all()
+                combined_rows.extend(dict(row) for row in tag_rows)
         except SQLAlchemyDatabaseError as exc:
             if _is_missing_relation_error(exc):
                 _warn_missing_review_tables(
                     "fetch_source_change_proposals",
                     (
                         "app.unsorted_file_push_proposals",
+                        "app.unsorted_file_tag_proposals",
                     ),
                 )
                 return []
             raise
-    result_rows = [dict(row) for row in rows]
-    for row in result_rows:
+
+    combined_rows.sort(
+        key=lambda row: (
+            _proposal_status_rank(row.get("status")),
+            _proposal_created_sort_value(row.get("created_at")),
+            int(row.get("id") or 0),
+            _normalize_source_proposal_type(row.get("source_proposal_type")),
+        )
+    )
+    result_rows = combined_rows[:max_limit]
+    for index, row in enumerate(result_rows, start=1):
+        row["dataset_entry"] = str(row.get("dataset_entry") or "").strip() or f"S-{index:03d}"
         row["proposal_source"] = PROPOSAL_SOURCE_SOURCE
+        row["source_proposal_type"] = _normalize_source_proposal_type(row.get("source_proposal_type"))
     return result_rows
 
 
@@ -2668,57 +2823,162 @@ def _fetch_theory_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
     return proposal
 
 
-def _fetch_source_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
+def _fetch_source_proposal_by_id(
+    proposal_id: int,
+    *,
+    source_proposal_type: str = "",
+) -> Dict[str, object] | None:
     _ensure_local_db()
     with readonly_session_scope() as session:
-        try:
-            row = session.execute(
-                text(
-                    """
-                    SELECT
-                        p.id,
-                        COALESCE(p.source_slug, '') AS person_slug,
-                        p.proposer_user_id,
-                        COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
-                        COALESCE(proposer_user.email, '') AS proposer_email,
-                        'source' AS proposal_scope,
-                        COALESCE(p.note, '') AS note,
-                        COALESCE(p.status, '') AS status,
-                        p.created_at,
-                        p.reviewed_at,
-                        0::bigint AS reviewer_user_id,
-                        ''::text AS reviewer_name,
-                        ''::text AS reviewer_email,
-                        ''::text AS review_note,
-                        0::integer AS report_triggered,
-                        p.unsorted_file_id,
-                        COALESCE(uf.file_name, '') AS unsorted_file_name,
-                        COALESCE(uf.origin_text, '') AS unsorted_origin_text,
-                        COALESCE(uf.mime_type, '') AS unsorted_mime_type,
-                        COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
-                        COALESCE(uf.bucket, '') AS unsorted_bucket,
-                        COALESCE(uf.blob_path, '') AS unsorted_blob_path,
-                        COALESCE(s.slug, p.source_slug, '') AS source_slug,
-                        COALESCE(s.name, '') AS source_name,
-                        p.source_id
-                    FROM app.unsorted_file_push_proposals p
-                    LEFT JOIN app.unsorted_files uf
-                        ON uf.id = p.unsorted_file_id
-                    LEFT JOIN app.sources_cards s
-                        ON s.id = p.source_id
-                    LEFT JOIN app."user" proposer_user
-                        ON proposer_user.id = p.proposer_user_id
-                    WHERE p.id = :proposal_id
-                    """
+        has_push_proposals = _table_exists_in_search_path(session, "unsorted_file_push_proposals")
+        has_tag_proposals = _table_exists_in_search_path(session, "unsorted_file_tag_proposals")
+        has_tag_rows = has_tag_proposals and _table_exists_in_search_path(session, "unsorted_file_tag_proposal_tags")
+        normalized_requested_type = (
+            _normalize_source_proposal_type(source_proposal_type)
+            if str(source_proposal_type or "").strip()
+            else ""
+        )
+        if not has_push_proposals and not has_tag_proposals:
+            _warn_missing_review_tables(
+                "fetch_source_proposal_by_id",
+                (
+                    "app.unsorted_file_push_proposals",
+                    "app.unsorted_file_tag_proposals",
                 ),
-                {"proposal_id": int(proposal_id)},
-            ).mappings().one_or_none()
+            )
+            return None
+        try:
+            row = None
+            if normalized_requested_type in {"", SOURCE_PROPOSAL_TYPE_PUSH} and has_push_proposals:
+                row = session.execute(
+                    text(
+                        """
+                        SELECT
+                            p.id,
+                            COALESCE(p.source_slug, '') AS person_slug,
+                            p.proposer_user_id,
+                            COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
+                            COALESCE(proposer_user.email, '') AS proposer_email,
+                            'source' AS proposal_scope,
+                            COALESCE(p.note, '') AS note,
+                            COALESCE(p.status, '') AS status,
+                            p.created_at,
+                            p.reviewed_at,
+                            0::bigint AS reviewer_user_id,
+                            ''::text AS reviewer_name,
+                            ''::text AS reviewer_email,
+                            ''::text AS review_note,
+                            0::integer AS report_triggered,
+                            p.unsorted_file_id,
+                            COALESCE(uf.file_name, '') AS unsorted_file_name,
+                            COALESCE(uf.origin_text, '') AS unsorted_origin_text,
+                            COALESCE(uf.mime_type, '') AS unsorted_mime_type,
+                            COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
+                            COALESCE(uf.bucket, '') AS unsorted_bucket,
+                            COALESCE(uf.blob_path, '') AS unsorted_blob_path,
+                            COALESCE(s.slug, p.source_slug, '') AS source_slug,
+                            COALESCE(s.name, '') AS source_name,
+                            p.source_id,
+                            '[]'::text AS current_tags_json,
+                            '[]'::text AS proposed_tags_json,
+                            :push_type AS source_proposal_type
+                        FROM app.unsorted_file_push_proposals p
+                        LEFT JOIN app.unsorted_files uf
+                            ON uf.id = p.unsorted_file_id
+                        LEFT JOIN app.sources_cards s
+                            ON s.id = p.source_id
+                        LEFT JOIN app."user" proposer_user
+                            ON proposer_user.id = p.proposer_user_id
+                        WHERE p.id = :proposal_id
+                        """
+                    ),
+                    {
+                        "proposal_id": int(proposal_id),
+                        "push_type": SOURCE_PROPOSAL_TYPE_PUSH,
+                    },
+                ).mappings().one_or_none()
+
+            if row is None and normalized_requested_type in {"", SOURCE_PROPOSAL_TYPE_TAGS} and has_tag_proposals:
+                proposed_tags_select = (
+                    """
+                            COALESCE(
+                                (
+                                    SELECT json_agg(utpt.tag_label ORDER BY lower(utpt.tag_label), utpt.tag_label)
+                                    FROM app.unsorted_file_tag_proposal_tags utpt
+                                    WHERE utpt.proposal_id = p.id
+                                ),
+                                '[]'::json
+                            )::text AS proposed_tags_json,
+                    """
+                    if has_tag_rows
+                    else "COALESCE(p.tags_json, '[]') AS proposed_tags_json,"
+                )
+                row = session.execute(
+                    text(
+                        """
+                        SELECT
+                            p.id,
+                            ('unsorted-file-' || p.unsorted_file_id::text) AS person_slug,
+                            p.proposer_user_id,
+                            COALESCE(NULLIF(proposer_user.name, ''), proposer_user.email, '') AS proposer_name,
+                            COALESCE(proposer_user.email, '') AS proposer_email,
+                            'source' AS proposal_scope,
+                            COALESCE(p.note, '') AS note,
+                            COALESCE(p.status, '') AS status,
+                            p.created_at,
+                            p.reviewed_at,
+                            COALESCE(p.reviewer_user_id, 0)::bigint AS reviewer_user_id,
+                            COALESCE(NULLIF(reviewer_user.name, ''), reviewer_user.email, '') AS reviewer_name,
+                            COALESCE(reviewer_user.email, '') AS reviewer_email,
+                            COALESCE(p.review_note, '') AS review_note,
+                            0::integer AS report_triggered,
+                            p.unsorted_file_id,
+                            COALESCE(uf.file_name, '') AS unsorted_file_name,
+                            COALESCE(uf.origin_text, '') AS unsorted_origin_text,
+                            COALESCE(uf.mime_type, '') AS unsorted_mime_type,
+                            COALESCE(uf.size_bytes, 0)::bigint AS unsorted_size_bytes,
+                            COALESCE(uf.bucket, '') AS unsorted_bucket,
+                            COALESCE(uf.blob_path, '') AS unsorted_blob_path,
+                            ('unsorted-file-' || p.unsorted_file_id::text) AS source_slug,
+                            ''::text AS source_name,
+                            0::bigint AS source_id,
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(prev.tags_json, '[]')
+                                    FROM app.unsorted_file_tag_proposals prev
+                                    WHERE prev.unsorted_file_id = p.unsorted_file_id
+                                      AND COALESCE(lower(prev.status), '') = 'accepted'
+                                    ORDER BY prev.reviewed_at DESC NULLS LAST, prev.created_at DESC, prev.id DESC
+                                    LIMIT 1
+                                ),
+                                '[]'
+                            ) AS current_tags_json,
+                            """
+                        + proposed_tags_select
+                        + """
+                            :tags_type AS source_proposal_type
+                        FROM app.unsorted_file_tag_proposals p
+                        LEFT JOIN app.unsorted_files uf
+                            ON uf.id = p.unsorted_file_id
+                        LEFT JOIN app."user" proposer_user
+                            ON proposer_user.id = p.proposer_user_id
+                        LEFT JOIN app."user" reviewer_user
+                            ON reviewer_user.id = p.reviewer_user_id
+                        WHERE p.id = :proposal_id
+                        """
+                    ),
+                    {
+                        "proposal_id": int(proposal_id),
+                        "tags_type": SOURCE_PROPOSAL_TYPE_TAGS,
+                    },
+                ).mappings().one_or_none()
         except SQLAlchemyDatabaseError as exc:
             if _is_missing_relation_error(exc):
                 _warn_missing_review_tables(
                     "fetch_source_proposal_by_id",
                     (
                         "app.unsorted_file_push_proposals",
+                        "app.unsorted_file_tag_proposals",
                     ),
                 )
                 return None
@@ -2728,10 +2988,9 @@ def _fetch_source_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
         return None
 
     proposal = dict(row)
+    source_proposal_type_value = _normalize_source_proposal_type(proposal.get("source_proposal_type"))
     file_id = int(proposal.get("unsorted_file_id") or 0)
     file_name = str(proposal.get("unsorted_file_name") or "").strip() or "file"
-    source_slug = str(proposal.get("source_slug") or proposal.get("person_slug") or "").strip().lower()
-    source_name = str(proposal.get("source_name") or "").strip() or source_slug
     origin_text = str(proposal.get("unsorted_origin_text") or "").strip()
     mime_type = str(proposal.get("unsorted_mime_type") or "").strip()
     size_bytes = int(proposal.get("unsorted_size_bytes") or 0)
@@ -2739,17 +2998,39 @@ def _fetch_source_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
     blob_path = str(proposal.get("unsorted_blob_path") or "").strip()
     media_url = media_path(blob_path) if blob_path else ""
     preview_image_url = media_url if mime_type.lower().startswith("image/") else ""
-    base_markdown, proposed_markdown = _build_source_push_review_markdown(
-        unsorted_file_id=file_id,
-        file_name=file_name,
-        source_slug=source_slug,
-        source_name=source_name,
-        origin_text=origin_text,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-        note=note_value,
-        media_url=media_url,
-    )
+    if source_proposal_type_value == SOURCE_PROPOSAL_TYPE_TAGS:
+        source_slug = (
+            str(proposal.get("source_slug") or proposal.get("person_slug") or "").strip().lower()
+            or f"unsorted-file-{file_id}"
+        )
+        source_name = "Unsorted file tags"
+        current_tags = _decode_tags(proposal.get("current_tags_json"))
+        proposed_tags = _decode_tags(proposal.get("proposed_tags_json"))
+        base_markdown, proposed_markdown = _build_source_tags_review_markdown(
+            unsorted_file_id=file_id,
+            file_name=file_name,
+            origin_text=origin_text,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            current_tags=current_tags,
+            proposed_tags=proposed_tags,
+            note=note_value,
+            media_url=media_url,
+        )
+    else:
+        source_slug = str(proposal.get("source_slug") or proposal.get("person_slug") or "").strip().lower()
+        source_name = str(proposal.get("source_name") or "").strip() or source_slug
+        base_markdown, proposed_markdown = _build_source_push_review_markdown(
+            unsorted_file_id=file_id,
+            file_name=file_name,
+            source_slug=source_slug,
+            source_name=source_name,
+            origin_text=origin_text,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            note=note_value,
+            media_url=media_url,
+        )
     proposal["person_slug"] = source_slug
     proposal["base_payload"] = base_markdown
     proposal["proposed_payload"] = proposed_markdown
@@ -2767,6 +3048,7 @@ def _fetch_source_proposal_by_id(proposal_id: int) -> Dict[str, object] | None:
     proposal["current_markdown"] = base_markdown
     proposal["current_tags_json"] = "[]"
     proposal["events_json"] = "[]"
+    proposal["source_proposal_type"] = source_proposal_type_value
     proposal["proposal_source"] = PROPOSAL_SOURCE_SOURCE
     return proposal
 
@@ -2901,13 +3183,52 @@ def _accept_source_push_proposal(
     return resolved_source_slug
 
 
+def _accept_source_tags_proposal(
+    session,
+    *,
+    proposal: Dict[str, object],
+    reviewer_user_id: int,
+) -> str:
+    proposal_id = int(proposal.get("id") or 0)
+    file_id = int(proposal.get("unsorted_file_id") or 0)
+    slug_hint = str(proposal.get("person_slug") or proposal.get("source_slug") or "").strip().lower()
+    if proposal_id <= 0:
+        raise ValueError("Proposal id is missing.")
+    if file_id <= 0:
+        raise ValueError("Unsorted file id is missing from proposal.")
+
+    session.execute(
+        text(
+            """
+            UPDATE app.unsorted_file_tag_proposals
+            SET status = 'accepted',
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewer_user_id = :reviewer_user_id,
+                review_note = :review_note
+            WHERE id = :proposal_id
+            """
+        ),
+        {
+            "proposal_id": proposal_id,
+            "reviewer_user_id": int(reviewer_user_id),
+            "review_note": "Accepted by reviewer from The List review panel",
+        },
+    )
+    return slug_hint or f"unsorted-file-{file_id}"
+
+
 def _fetch_proposal_by_id(
     proposal_id: int,
     proposal_source: str = PROPOSAL_SOURCE_PEOPLE,
+    *,
+    source_proposal_type: str = "",
 ) -> Dict[str, object] | None:
     source = _normalize_proposal_source(proposal_source)
     if source == PROPOSAL_SOURCE_SOURCE:
-        return _fetch_source_proposal_by_id(proposal_id)
+        return _fetch_source_proposal_by_id(
+            proposal_id,
+            source_proposal_type=source_proposal_type,
+        )
     if source == PROPOSAL_SOURCE_THEORY:
         return _fetch_theory_proposal_by_id(proposal_id)
     return _fetch_people_proposal_by_id(proposal_id)
@@ -3598,6 +3919,11 @@ def _render_proposal_meta(
     scope = _normalize_proposal_scope(proposal.get("proposal_scope"))
     scope_title = _scope_dataset_title(scope)
     proposal_source = _normalize_proposal_source(proposal.get("proposal_source"))
+    source_proposal_type = (
+        _normalize_source_proposal_type(proposal.get("source_proposal_type"))
+        if proposal_source == PROPOSAL_SOURCE_SOURCE
+        else ""
+    )
     source_label = _proposal_source_label(str(proposal.get("proposal_source") or PROPOSAL_SOURCE_PEOPLE))
     proposer_user_id = int(proposal.get("proposer_user_id") or 0)
     proposer_identity = _format_username_with_email(
@@ -3607,7 +3933,10 @@ def _render_proposal_meta(
     )
     heading = f"### {scope_title} proposal"
     if proposal_source == PROPOSAL_SOURCE_SOURCE:
-        heading = "### Source push proposal"
+        if source_proposal_type == SOURCE_PROPOSAL_TYPE_TAGS:
+            heading = "### Source tags proposal"
+        else:
+            heading = "### Source push proposal"
     created_raw = str(proposal.get("created_at") or "").strip() or "n/a"
     created_ago = _format_elapsed_ago(proposal.get("created_at"))
     created_line = f"`{created_raw}`" if created_raw else "`n/a`"
@@ -3631,8 +3960,14 @@ def _render_proposal_meta(
         if file_id > 0:
             lines.append(f"- **Unsorted file id:** `{file_id}`")
         lines.append(f"- **Unsorted file name:** `{file_name}`")
-        if source_name:
-            lines.append(f"- **Target source name:** `{source_name}`")
+        if source_proposal_type == SOURCE_PROPOSAL_TYPE_TAGS:
+            current_tags = _format_tags_markdown(_decode_tags(proposal.get("current_tags_json")))
+            proposed_tags = _format_tags_markdown(_decode_tags(proposal.get("proposed_tags_json")))
+            lines.append(f"- **Current accepted tags:** {current_tags}")
+            lines.append(f"- **Proposed tags:** {proposed_tags}")
+        else:
+            if source_name:
+                lines.append(f"- **Target source name:** `{source_name}`")
         origin_text = str(proposal.get("unsorted_origin_text") or "").strip()
         if origin_text:
             lines.append(f"- **Origin/description:** {origin_text}")
@@ -5588,7 +5923,16 @@ def _build_admin_panel(
     choices: List[Tuple[str, str]] = []
     for proposal in proposal_rows:
         proposal_source = _normalize_proposal_source(proposal.get("proposal_source"))
-        pid = _proposal_choice_value(proposal_source, proposal.get("id"))
+        source_proposal_type = (
+            _normalize_source_proposal_type(proposal.get("source_proposal_type"))
+            if proposal_source == PROPOSAL_SOURCE_SOURCE
+            else ""
+        )
+        pid = _proposal_choice_value(
+            proposal_source,
+            proposal.get("id"),
+            source_proposal_type=source_proposal_type,
+        )
         if not pid:
             continue
         status = (proposal.get("status") or "unknown").strip().lower()
@@ -5603,7 +5947,12 @@ def _build_admin_panel(
         created = str(proposal.get("created_at") or "")
         dataset_entry = str(proposal.get("dataset_entry") or "").strip() or _format_scope_dataset_entry(scope, 1)
         source_label = _proposal_source_label(proposal_source)
-        label = f"{source_label} {dataset_entry} [{status}/{scope}] {slug} - {proposer_identity} ({created})"
+        scope_label = (
+            f"{scope}:{source_proposal_type}"
+            if proposal_source == PROPOSAL_SOURCE_SOURCE
+            else scope
+        )
+        label = f"{source_label} {dataset_entry} [{status}/{scope_label}] {slug} - {proposer_identity} ({created})"
         choices.append((label, pid))
         by_id[pid] = proposal
 
@@ -5618,7 +5967,11 @@ def _build_admin_panel(
     prioritized = str(prioritize_proposal_id or "").strip()
     prioritized_ref = _parse_proposal_choice_value(prioritized)
     if prioritized_ref is not None:
-        prioritized = _proposal_choice_value(prioritized_ref[0], prioritized_ref[1])
+        prioritized = _proposal_choice_value(
+            prioritized_ref[0],
+            prioritized_ref[1],
+            source_proposal_type=prioritized_ref[2],
+        )
     if prioritized in by_id:
         pinned_choice = next((choice for choice in choices if choice[1] == prioritized), None)
         if pinned_choice is not None:
@@ -5627,13 +5980,21 @@ def _build_admin_panel(
     selected = str(selected_proposal_id or "").strip()
     selected_ref = _parse_proposal_choice_value(selected)
     if selected_ref is not None:
-        selected = _proposal_choice_value(selected_ref[0], selected_ref[1])
+        selected = _proposal_choice_value(
+            selected_ref[0],
+            selected_ref[1],
+            source_proposal_type=selected_ref[2],
+        )
     if selected not in by_id:
         selected = choices[0][1]
     selected_summary = by_id[selected]
     selected_ref = _parse_proposal_choice_value(selected)
     selected_proposal = (
-        _fetch_proposal_by_id(selected_ref[1], proposal_source=selected_ref[0])
+        _fetch_proposal_by_id(
+            selected_ref[1],
+            proposal_source=selected_ref[0],
+            source_proposal_type=selected_ref[2],
+        )
         if selected_ref is not None
         else None
     )
@@ -5676,6 +6037,7 @@ def _next_pending_proposal_for_slug(
     slug_filter: str = "",
     exclude_proposal_id: int | None = None,
     proposal_source: str | None = None,
+    source_proposal_type: str | None = None,
 ) -> str | None:
     normalized_slug = str(person_slug or "").strip().lower()
     if not normalized_slug:
@@ -5686,11 +6048,23 @@ def _next_pending_proposal_for_slug(
         if str(proposal_source or "").strip()
         else ""
     )
+    source_type_filter = (
+        _normalize_source_proposal_type(source_proposal_type)
+        if source_filter == PROPOSAL_SOURCE_SOURCE and str(source_proposal_type or "").strip()
+        else ""
+    )
     excluded = str(int(exclude_proposal_id)) if exclude_proposal_id is not None else ""
     proposals = _fetch_change_proposals(slug_filter=slug_filter)
     for proposal in proposals:
         current_source = _normalize_proposal_source(proposal.get("proposal_source"))
         if source_filter and current_source != source_filter:
+            continue
+        current_type = (
+            _normalize_source_proposal_type(proposal.get("source_proposal_type"))
+            if current_source == PROPOSAL_SOURCE_SOURCE
+            else ""
+        )
+        if source_type_filter and current_type != source_type_filter:
             continue
         proposal_slug = str(proposal.get("person_slug") or "").strip().lower()
         proposal_status = str(proposal.get("status") or "").strip().lower()
@@ -5700,7 +6074,11 @@ def _next_pending_proposal_for_slug(
         if excluded and proposal_id == excluded:
             continue
         if proposal_id.isdigit():
-            return _proposal_choice_value(current_source, proposal_id)
+            return _proposal_choice_value(
+                current_source,
+                proposal_id,
+                source_proposal_type=current_type,
+            )
     return None
 
 
@@ -6731,7 +7109,11 @@ def _select_admin_proposal(proposal_id: str, slug_filter: str, review_view_mode:
     selected = str(proposal_id or "").strip()
     selected_ref = _parse_proposal_choice_value(selected)
     selected_proposal = (
-        _fetch_proposal_by_id(selected_ref[1], proposal_source=selected_ref[0])
+        _fetch_proposal_by_id(
+            selected_ref[1],
+            proposal_source=selected_ref[0],
+            source_proposal_type=selected_ref[2],
+        )
         if selected_ref is not None
         else None
     )
@@ -6791,7 +7173,11 @@ def _preview_admin_proposed_edit(
     current_image_url = ""
     proposed_image_url = ""
     proposal: Dict[str, object] | None = (
-        _fetch_proposal_by_id(selected_ref[1], proposal_source=selected_ref[0])
+        _fetch_proposal_by_id(
+            selected_ref[1],
+            proposal_source=selected_ref[0],
+            source_proposal_type=selected_ref[2],
+        )
         if selected_ref is not None
         else None
     )
@@ -7103,8 +7489,12 @@ def _accept_admin_proposal(
         panel = _build_admin_panel(slug_filter=slug_filter, review_view_mode=review_view_mode)
         return ("❌ Select a valid proposal first.", *panel)
 
-    proposal_source, proposal_id_int = selected_ref
-    proposal = _fetch_proposal_by_id(proposal_id_int, proposal_source=proposal_source)
+    proposal_source, proposal_id_int, source_proposal_type = selected_ref
+    proposal = _fetch_proposal_by_id(
+        proposal_id_int,
+        proposal_source=proposal_source,
+        source_proposal_type=source_proposal_type,
+    )
     if proposal is None:
         panel = _build_admin_panel(slug_filter=slug_filter, review_view_mode=review_view_mode)
         return ("❌ Proposal not found.", *panel)
@@ -7115,6 +7505,9 @@ def _accept_admin_proposal(
         return (f"⚠️ Proposal #{proposal_id_int} is already `{status or 'unknown'}`.", *panel)
 
     if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        normalized_source_type = _normalize_source_proposal_type(
+            proposal.get("source_proposal_type") or source_proposal_type
+        )
         admin_user_id = _resolve_request_user_id(user)
         if admin_user_id <= 0:
             panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
@@ -7123,11 +7516,18 @@ def _accept_admin_proposal(
         _ensure_local_db()
         try:
             with session_scope() as session:
-                source_slug = _accept_source_push_proposal(
-                    session,
-                    proposal=proposal,
-                    reviewer_user_id=admin_user_id,
-                )
+                if normalized_source_type == SOURCE_PROPOSAL_TYPE_TAGS:
+                    source_slug = _accept_source_tags_proposal(
+                        session,
+                        proposal=proposal,
+                        reviewer_user_id=admin_user_id,
+                    )
+                else:
+                    source_slug = _accept_source_push_proposal(
+                        session,
+                        proposal=proposal,
+                        reviewer_user_id=admin_user_id,
+                    )
         except Exception as exc:  # noqa: BLE001
             panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
             return (f"❌ Cannot accept source proposal #{proposal_id_int}: {exc}", *panel)
@@ -7137,6 +7537,7 @@ def _accept_admin_proposal(
             slug_filter=slug_filter,
             exclude_proposal_id=proposal_id_int,
             proposal_source=proposal_source,
+            source_proposal_type=normalized_source_type,
         )
         panel = _build_admin_panel(
             next_pending_for_source,
@@ -7144,6 +7545,12 @@ def _accept_admin_proposal(
             prioritize_proposal_id=next_pending_for_source,
             review_view_mode=review_view_mode,
         )
+        if normalized_source_type == SOURCE_PROPOSAL_TYPE_TAGS:
+            file_id = int(proposal.get("unsorted_file_id") or 0)
+            return (
+                f"✅ Source tags proposal #{proposal_id_int} accepted for unsorted file `#{file_id}`.",
+                *panel,
+            )
         return (
             f"✅ Source proposal #{proposal_id_int} accepted and file moved into source `{source_slug}`.",
             *panel,
@@ -7531,7 +7938,11 @@ def _open_decline_modal(proposal_id: str):
             "❌ Select a valid proposal first.",
         )
 
-    proposal = _fetch_proposal_by_id(selected_ref[1], proposal_source=selected_ref[0])
+    proposal = _fetch_proposal_by_id(
+        selected_ref[1],
+        proposal_source=selected_ref[0],
+        source_proposal_type=selected_ref[2],
+    )
     if proposal is None:
         return (
             gr.update(visible=False),
@@ -7602,8 +8013,12 @@ def _decline_admin_proposal(
             *panel,
         )
 
-    proposal_source, proposal_id_int = selected_ref
-    proposal = _fetch_proposal_by_id(proposal_id_int, proposal_source=proposal_source)
+    proposal_source, proposal_id_int, source_proposal_type = selected_ref
+    proposal = _fetch_proposal_by_id(
+        proposal_id_int,
+        proposal_source=proposal_source,
+        source_proposal_type=source_proposal_type,
+    )
     if proposal is None:
         panel = _build_admin_panel(slug_filter=slug_filter, review_view_mode=review_view_mode)
         return (
@@ -7637,23 +8052,53 @@ def _decline_admin_proposal(
         )
 
     if proposal_source == PROPOSAL_SOURCE_SOURCE:
+        normalized_source_type = _normalize_source_proposal_type(
+            proposal.get("source_proposal_type") or source_proposal_type
+        )
         _ensure_local_db()
         with session_scope() as session:
-            session.execute(
-                text(
-                    """
-                    UPDATE app.unsorted_file_push_proposals
-                    SET status = 'declined',
-                        reviewed_at = CURRENT_TIMESTAMP
-                    WHERE id = :proposal_id
-                    """
-                ),
-                {
-                    "proposal_id": proposal_id_int,
-                },
-            )
+            if normalized_source_type == SOURCE_PROPOSAL_TYPE_TAGS:
+                session.execute(
+                    text(
+                        """
+                        UPDATE app.unsorted_file_tag_proposals
+                        SET status = 'declined',
+                            reviewed_at = CURRENT_TIMESTAMP,
+                            reviewer_user_id = :reviewer_user_id,
+                            review_note = :review_note
+                        WHERE id = :proposal_id
+                        """
+                    ),
+                    {
+                        "proposal_id": proposal_id_int,
+                        "reviewer_user_id": admin_user_id,
+                        "review_note": reason,
+                    },
+                )
+            else:
+                session.execute(
+                    text(
+                        """
+                        UPDATE app.unsorted_file_push_proposals
+                        SET status = 'declined',
+                            reviewed_at = CURRENT_TIMESTAMP
+                        WHERE id = :proposal_id
+                        """
+                    ),
+                    {
+                        "proposal_id": proposal_id_int,
+                    },
+                )
 
         panel = _build_admin_panel(selected, slug_filter=slug_filter, review_view_mode=review_view_mode)
+        if normalized_source_type == SOURCE_PROPOSAL_TYPE_TAGS:
+            return (
+                f"✅ Source tags proposal #{proposal_id_int} declined.",
+                gr.update(visible=False),
+                gr.update(value=""),
+                "",
+                *panel,
+            )
         return (
             f"✅ Source proposal #{proposal_id_int} declined.",
             gr.update(visible=False),
@@ -7733,8 +8178,12 @@ def _report_user_from_proposal(
             *panel,
         )
 
-    proposal_source, proposal_id_int = selected_ref
-    proposal = _fetch_proposal_by_id(proposal_id_int, proposal_source=proposal_source)
+    proposal_source, proposal_id_int, source_proposal_type = selected_ref
+    proposal = _fetch_proposal_by_id(
+        proposal_id_int,
+        proposal_source=proposal_source,
+        source_proposal_type=source_proposal_type,
+    )
     if proposal is None:
         panel = _build_admin_panel(slug_filter=slug_filter, review_view_mode=review_view_mode)
         return (

@@ -1338,6 +1338,29 @@ def _find_index_by_file_id(files: Sequence[Dict[str, object]], file_id: int, fal
     return max(0, min(len(files) - 1, parsed_fallback))
 
 
+def _resolve_unsorted_file_selection(
+    current_file_id: object,
+    current_index: object,
+    files_state: Sequence[Dict[str, object]] | None,
+) -> tuple[int, int]:
+    normalized_file_id = _coerce_file_id(current_file_id)
+    rows = list(files_state or [])
+    if not rows:
+        return normalized_file_id, 0
+
+    try:
+        parsed_index = int(current_index)
+    except (TypeError, ValueError):
+        parsed_index = 0
+    resolved_index = max(0, min(len(rows) - 1, parsed_index))
+
+    if normalized_file_id > 0:
+        return normalized_file_id, resolved_index
+
+    fallback_id = _coerce_file_id(rows[resolved_index].get("id"))
+    return fallback_id, resolved_index
+
+
 def _build_create_source_link(file_id: int) -> str:
     normalized = _coerce_file_id(file_id)
     target = "/source-create/"
@@ -1727,10 +1750,15 @@ def _mark_unsorted_action(
     action_type: str,
     current_file_id: int,
     current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
     request: gr.Request,
 ):
     normalized_action = _normalize_action(action_type)
-    normalized_file_id = _coerce_file_id(current_file_id)
+    normalized_file_id, resolved_fallback_index = _resolve_unsorted_file_selection(
+        current_file_id,
+        current_index,
+        files_state,
+    )
 
     try:
         user, can_submit, _is_admin = _role_flags_from_request(request)
@@ -1812,7 +1840,7 @@ def _mark_unsorted_action(
     ) = _refresh_files_and_view(
         actor_user_id,
         current_file_id=normalized_file_id,
-        fallback_index=int(current_index or 0),
+        fallback_index=resolved_fallback_index,
         can_interact=can_submit,
         show_detail=True,
     )
@@ -1837,16 +1865,31 @@ def _mark_unsorted_action(
     )
 
 
-def _mark_unsorted_too_redacted(current_file_id: int, current_index: int, request: gr.Request):
-    return _mark_unsorted_action(ACTION_TOO_REDACTED, current_file_id, current_index, request)
+def _mark_unsorted_too_redacted(
+    current_file_id: int,
+    current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
+    request: gr.Request,
+):
+    return _mark_unsorted_action(ACTION_TOO_REDACTED, current_file_id, current_index, files_state, request)
 
 
-def _mark_unsorted_useless(current_file_id: int, current_index: int, request: gr.Request):
-    return _mark_unsorted_action(ACTION_USELESS, current_file_id, current_index, request)
+def _mark_unsorted_useless(
+    current_file_id: int,
+    current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
+    request: gr.Request,
+):
+    return _mark_unsorted_action(ACTION_USELESS, current_file_id, current_index, files_state, request)
 
 
-def _open_unsorted_push_modal(current_file_id: int, request: gr.Request):
-    normalized_file_id = _coerce_file_id(current_file_id)
+def _open_unsorted_push_modal(
+    current_file_id: int,
+    current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
+    request: gr.Request,
+):
+    normalized_file_id = _resolve_unsorted_file_selection(current_file_id, current_index, files_state)[0]
 
     user, can_submit, _is_admin = _role_flags_from_request(request)
     if not user:
@@ -1898,8 +1941,13 @@ def _cancel_unsorted_push_modal():
     )
 
 
-def _open_unsorted_tags_modal(current_file_id: int, request: gr.Request):
-    normalized_file_id = _coerce_file_id(current_file_id)
+def _open_unsorted_tags_modal(
+    current_file_id: int,
+    current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
+    request: gr.Request,
+):
+    normalized_file_id = _resolve_unsorted_file_selection(current_file_id, current_index, files_state)[0]
     tag_catalog = _fetch_source_tag_catalog()
     editor_markup = _render_unsorted_tags_editor_markup(tag_catalog)
 
@@ -1968,9 +2016,14 @@ def _submit_unsorted_tags_proposal(
     proposed_tags: str,
     proposal_note: str,
     current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
     request: gr.Request,
 ):
-    normalized_file_id = _coerce_file_id(current_file_id)
+    normalized_file_id, resolved_fallback_index = _resolve_unsorted_file_selection(
+        current_file_id,
+        current_index,
+        files_state,
+    )
     parsed_tags = _parse_tags_input(proposed_tags)
     proposal_id = 0
 
@@ -2115,7 +2168,7 @@ def _submit_unsorted_tags_proposal(
     ) = _refresh_files_and_view(
         actor_user_id,
         current_file_id=normalized_file_id,
-        fallback_index=int(current_index or 0),
+        fallback_index=resolved_fallback_index,
         can_interact=can_submit,
         show_detail=True,
     )
@@ -2150,9 +2203,14 @@ def _submit_unsorted_push_to_source(
     selected_source_slug: str,
     push_note: str,
     current_index: int,
+    files_state: Sequence[Dict[str, object]] | None,
     request: gr.Request,
 ):
-    normalized_file_id = _coerce_file_id(current_file_id)
+    normalized_file_id, resolved_fallback_index = _resolve_unsorted_file_selection(
+        current_file_id,
+        current_index,
+        files_state,
+    )
     normalized_source_slug = str(selected_source_slug or "").strip().lower()
     proposal_id = 0
 
@@ -2291,7 +2349,7 @@ def _submit_unsorted_push_to_source(
     ) = _refresh_files_and_view(
         actor_user_id,
         current_file_id=normalized_file_id,
-        fallback_index=int(current_index or 0),
+        fallback_index=resolved_fallback_index,
         can_interact=can_submit,
         show_detail=True,
     )
