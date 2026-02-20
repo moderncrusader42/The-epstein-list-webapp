@@ -240,6 +240,22 @@
   font-size: 0.92rem;
 }
 
+#home-shell .home-callout__repo {
+  margin-top: 0.45rem;
+  font-weight: 600;
+}
+
+#home-shell .home-callout__repo a {
+  color: #0b4bc7;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+
+#home-shell .home-callout__repo a:hover {
+  color: #0a3ea1;
+}
+
 @keyframes home-rise {
   from {
     opacity: 0;

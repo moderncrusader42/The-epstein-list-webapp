@@ -92,6 +92,12 @@ def _home_guide_text() -> str:
         "<p>"
         "We are actively looking for people right now, so role assignments are currently being handled with flexibility."
         "</p>"
+        "<p class='home-callout__repo'>"
+        "Code repository: "
+        "<a href='https://github.com/moderncrusader42/The-epstein-list-webapp/tree/main' target='_blank' rel='noopener noreferrer'>"
+        "https://github.com/moderncrusader42/The-epstein-list-webapp/tree/main"
+        "</a>"
+        "</p>"
         "</section>"
     )
 
