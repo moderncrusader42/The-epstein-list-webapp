@@ -1636,11 +1636,51 @@ def _render_source_header_meta(source: Dict[str, object]) -> str:
     )
 
 
+def _preserve_blank_lines_in_markdown(markdown: str) -> str:
+    """Preserve multiple consecutive blank lines in markdown.
+
+    Standard markdown collapses multiple blank lines into a single paragraph break.
+    This function converts sequences of 3+ newlines (2+ blank lines) into explicit
+    paragraphs with non-breaking spaces to maintain visual spacing.
+    """
+    import re
+
+    normalized = str(markdown or "").replace("\r\n", "\n")
+    print(f"[BLANK_LINES] Input markdown repr: {repr(normalized)}")
+    print(f"[BLANK_LINES] Input has {normalized.count(chr(10))} newlines total")
+
+    # Replace sequences of 3+ newlines with paragraph breaks containing nbsp
+    def _expand_blank_lines(match: re.Match[str]) -> str:
+        newline_count = len(match.group(0))
+        print(f"[BLANK_LINES] Found {newline_count} consecutive newlines")
+        # Standard paragraph break = 2 newlines (1 blank line)
+        # Extra blank lines = newline_count - 2
+        extra_blank_lines = newline_count - 2
+        if extra_blank_lines <= 0:
+            return match.group(0)
+        # Use non-breaking space on its own line for each extra blank line
+        # This creates a paragraph with only a non-breaking space
+        result = "\n\n" + "\u00a0\n\n" * extra_blank_lines
+        print(f"[BLANK_LINES] Replacing with {extra_blank_lines} nbsp lines")
+        return result
+
+    result = re.sub(r"\n{3,}", _expand_blank_lines, normalized)
+    print(f"[BLANK_LINES] Output markdown repr: {repr(result)}")
+    return result
+
+
 def _render_source_description_markdown(markdown: str) -> str:
+    print(f"[RENDER_MD] Called with markdown repr: {repr(markdown)}")
     normalized = str(markdown or "").strip()
     if not normalized:
+        print("[RENDER_MD] Empty markdown, returning empty string")
         return ""
-    return _render_citation_compiled_markdown(normalized)
+    # Preserve blank lines before rendering
+    preserved = _preserve_blank_lines_in_markdown(normalized)
+    print(f"[RENDER_MD] After preservation: {repr(preserved)}")
+    result = _render_citation_compiled_markdown(preserved)
+    print(f"[RENDER_MD] Final HTML output (first 500 chars): {result[:500]}")
+    return result
 
 
 def _is_source_markdown_preview_mode(view_mode: object) -> bool:
@@ -1653,9 +1693,12 @@ def _is_source_markdown_preview_mode(view_mode: object) -> bool:
 
 
 def _toggle_source_editor_markdown_view(view_mode: str, source_markdown: str):
+    print(f"[TOGGLE_MD] Called with view_mode={view_mode!r}, source_markdown repr: {repr(source_markdown)}")
     is_preview = _is_source_markdown_preview_mode(view_mode)
+    print(f"[TOGGLE_MD] is_preview={is_preview}")
     markdown_value = source_markdown or ""
     preview_value = _render_source_description_markdown(markdown_value)
+    print(f"[TOGGLE_MD] Returning markdown_value visible={not is_preview}, preview_value visible={is_preview}")
     return (
         gr.update(value=markdown_value, visible=not is_preview),
         gr.update(value=preview_value, visible=is_preview),
@@ -1663,6 +1706,8 @@ def _toggle_source_editor_markdown_view(view_mode: str, source_markdown: str):
 
 
 def _refresh_source_editor_markdown_preview(source_markdown: str):
+    """Update only the preview without touching the markdown textarea."""
+    print(f"[REFRESH_PREVIEW] Called with source_markdown repr: {repr(source_markdown)}")
     return gr.update(value=_render_source_description_markdown(source_markdown or ""))
 
 

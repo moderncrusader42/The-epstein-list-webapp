@@ -132,7 +132,13 @@
 }
 
 #sources-create-summary-preview .sources-visual-editor {
-  min-height: 100%;
+  display: block;
+  min-height: 260px;
+  width: 100%;
+}
+
+#sources-create-summary-preview .sources-visual-editor > :first-child {
+  margin-top: 0;
 }
 
 #sources-create-summary-preview .sources-visual-editor--active {

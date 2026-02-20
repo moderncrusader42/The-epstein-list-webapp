@@ -12,8 +12,11 @@ from src.pages.sources_list.core_sources import (
     CATALOG_VIEW_ICONS,
     DEFAULT_MARKDOWN_VIEW,
     FILE_VIEW_ICONS,
+    MARKDOWN_VIEW_PREVIEW,
+    MARKDOWN_VIEW_RAW,
     _create_source_card,
     _is_source_markdown_preview_mode,
+    _refresh_source_editor_markdown_preview,
     _render_cover_image_preview_markup,
     _render_create_file_origins_editor,
     _render_source_description_markdown,
@@ -245,7 +248,10 @@ def make_sources_create_app() -> gr.Blocks:
             with gr.Row(elem_id="sources-create-markdown-toolbar"):
                 gr.Markdown("**Description/Explanation**")
                 create_description_view_mode = gr.Radio(
-                    choices=[("Compiled", "preview"), ("Raw markdown", "raw")],
+                    choices=[
+                        ("Compiled", MARKDOWN_VIEW_PREVIEW),
+                        ("Raw markdown", MARKDOWN_VIEW_RAW),
+                    ],
                     value=DEFAULT_MARKDOWN_VIEW,
                     show_label=False,
                     container=False,
@@ -384,6 +390,26 @@ def make_sources_create_app() -> gr.Blocks:
             ),
             inputs=[create_description_view_mode, create_description_markdown],
             outputs=[create_description_markdown, create_description_preview],
+            show_progress=False,
+        )
+        create_description_markdown.input(
+            timed_page_load(
+                "/source-create",
+                _refresh_source_editor_markdown_preview,
+                label="live_refresh_source_create_markdown_preview",
+            ),
+            inputs=[create_description_markdown],
+            outputs=[create_description_preview],
+            show_progress=False,
+        )
+        create_description_markdown.change(
+            timed_page_load(
+                "/source-create",
+                _refresh_source_editor_markdown_preview,
+                label="change_refresh_source_create_markdown_preview",
+            ),
+            inputs=[create_description_markdown],
+            outputs=[create_description_preview],
             show_progress=False,
         )
 

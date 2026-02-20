@@ -1,6 +1,8 @@
 (function () {
   if (typeof window === "undefined") return;
 
+  console.log("=== [MD_CREATE_DEBUG] sources_create_markdown_inline.js LOADED v24 ===");
+
   const SUMMARY_INPUT_ID = "sources-create-summary";
   const SUMMARY_PREVIEW_ID = "sources-create-summary-preview";
   const SUMMARY_MODE_ID = "sources-create-summary-view-mode";
@@ -12,6 +14,7 @@
   let refreshScheduled = false;
   let summarySyncScheduled = false;
   let compileTimerId = 0;
+  let lastRenderedMarkdown = "";
 
   const observedRoots = new WeakSet();
   const boundGlobalRoots = new WeakSet();
@@ -81,14 +84,23 @@
   };
 
   const dispatchRawTextareaEvents = (textarea) => {
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    console.log("[MD_CREATE_DEBUG] Dispatching input and change events on textarea");
+    textarea.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
   };
 
   const setRawTextareaValue = (textarea, value, { emitEvents = false, forceEmit = false } = {}) => {
     if (!(textarea instanceof HTMLTextAreaElement)) return false;
     const nextValue = String(value || "");
-    const changed = (textarea.value || "") !== nextValue;
+    const currentValue = textarea.value || "";
+    const changed = currentValue !== nextValue;
+    console.log("[MD_CREATE_DEBUG] setRawTextareaValue:", { 
+      changed, 
+      emitEvents, 
+      forceEmit,
+      currentLen: currentValue.length,
+      nextLen: nextValue.length
+    });
     if (changed) {
       textarea.value = nextValue;
     }
@@ -107,9 +119,9 @@
   const normalizeMarkdownOutput = (value) =>
     String(value || "")
       .replace(/\r\n/g, "\n")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+      .replace(/[ \t]+$/gm, "")
+      .replace(/^\n+/, "")
+      .replace(/\n+$/, "");  // Trim trailing newlines (intentional blank lines are preserved as nbsp paragraphs)
 
   const renderInlineMarkdown = (node) => {
     if (node instanceof Text) {
@@ -225,6 +237,9 @@
       Array.from(node.childNodes)
         .map((child) => renderBlockMarkdown(child, depth))
         .join("");
+    if (tagName === "br") {
+      return "\n";
+    }
     if (/^h[1-6]$/.test(tagName)) {
       const level = Number.parseInt(tagName.charAt(1), 10);
       const content = collapseInlineText(renderInlineMarkdown(node));
@@ -233,7 +248,15 @@
     }
     if (tagName === "p" || tagName === "div") {
       const content = collapseInlineText(renderInlineMarkdown(node));
-      if (!content) return "";
+      // Check if this is an nbsp-only paragraph (used for preserving blank lines)
+      const rawText = String(node.textContent || "");
+      const isNbspOnly = !content && /^[\s\u00a0]+$/.test(rawText) && rawText.includes("\u00a0");
+      if (isNbspOnly) {
+        // Return single newline - previous element already ends with \n\n
+        // so this adds one more blank line (total 3 newlines = 2 blank lines)
+        return "\n";
+      }
+      if (!content) return "\n";
       return `${content}\n\n`;
     }
     if (tagName === "pre") {
@@ -307,6 +330,9 @@
     if (!(editor instanceof HTMLElement)) return;
     ensurePreviewCaretAnchor(editor);
     editor.focus();
+    if (isPreviewEditorEffectivelyEmpty(editor) && placeCaretAtStartOfEmptyEditor(editor)) {
+      return;
+    }
     const selection = window.getSelection();
     if (!selection) return;
     const range = document.createRange();
@@ -314,6 +340,38 @@
     range.collapse(false);
     selection.removeAllRanges();
     selection.addRange(range);
+  };
+
+  const isPreviewEditorEffectivelyEmpty = (editor) => {
+    if (!(editor instanceof HTMLElement)) return true;
+    if (editor.querySelector("img, hr, table, blockquote, pre, ul, ol, h1, h2, h3, h4, h5, h6")) {
+      return false;
+    }
+    return !collapseInlineText(editor.textContent || "");
+  };
+
+  const placeCaretAtStartOfEmptyEditor = (editor) => {
+    if (!(editor instanceof HTMLElement)) return false;
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const firstBlock =
+      editor.querySelector("p, div") ||
+      (editor.firstElementChild instanceof HTMLElement ? editor.firstElementChild : null);
+    try {
+      const range = document.createRange();
+      if (firstBlock instanceof HTMLElement) {
+        range.setStart(firstBlock, 0);
+      } else {
+        range.setStart(editor, 0);
+      }
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    } catch (error) {
+      void error;
+      return false;
+    }
   };
 
   const _selectionOffsetWithin = (root, node, offset) => {
@@ -338,11 +396,18 @@
     const start = _selectionOffsetWithin(root, range.startContainer, range.startOffset);
     const end = _selectionOffsetWithin(root, range.endContainer, range.endOffset);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    return {
+    
+    // Get total text length to compute offset from end
+    const totalLength = root.textContent?.length || 0;
+    const state = {
       start: Math.max(0, Number(start)),
       end: Math.max(0, Number(end)),
+      offsetFromEnd: Math.max(0, totalLength - Number(end)),
+      totalLength: totalLength,
       collapsed: range.collapsed,
     };
+    console.log("[MD_CREATE_DEBUG] captureSelectionState:", state);
+    return state;
   };
 
   const resolveSelectionOffset = (root, targetOffset) => {
@@ -382,18 +447,45 @@
     const selection = window.getSelection();
     if (!selection) return false;
 
-    const startPosition = resolveSelectionOffset(root, state.start);
-    const endPosition = state.collapsed ? startPosition : resolveSelectionOffset(root, state.end);
-    if (!startPosition || !endPosition) return false;
+    const newTotalLength = root.textContent?.length || 0;
+    
+    // Use offset from END for restoration - this handles the common case
+    // of typing at the end where the start offset changes but end offset stays at 0
+    let targetOffset;
+    if (state.offsetFromEnd <= 2) {
+      // Cursor was at or near end, place at end
+      targetOffset = newTotalLength;
+      console.log("[MD_CREATE_DEBUG] restoreSelectionState: placing at end");
+    } else if (state.start <= 2) {
+      // Cursor was at start, place at start
+      targetOffset = 0;
+      console.log("[MD_CREATE_DEBUG] restoreSelectionState: placing at start");
+    } else {
+      // Use offset from end to compute new position
+      targetOffset = Math.max(0, newTotalLength - state.offsetFromEnd);
+      console.log("[MD_CREATE_DEBUG] restoreSelectionState: using offsetFromEnd", state.offsetFromEnd, "->" , targetOffset);
+    }
+    
+    const position = resolveSelectionOffset(root, targetOffset);
+    if (!position) return false;
+    
+    console.log("[MD_CREATE_DEBUG] restoreSelectionState: resolved to", {
+      node: position.node?.nodeName,
+      offset: position.offset,
+      targetOffset: targetOffset,
+      newTotalLength: newTotalLength
+    });
+    
     try {
       const range = document.createRange();
-      range.setStart(startPosition.node, startPosition.offset);
-      range.setEnd(endPosition.node, endPosition.offset);
+      range.setStart(position.node, position.offset);
+      range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+      console.log("[MD_CREATE_DEBUG] restoreSelectionState: SUCCESS");
       return true;
     } catch (error) {
-      void error;
+      console.log("[MD_CREATE_DEBUG] restoreSelectionState: FAILED", error);
       return false;
     }
   };
@@ -482,6 +574,7 @@
     let listType = "";
     let inCodeBlock = false;
     const codeLines = [];
+    let consecutiveEmptyLines = 0;
 
     const flushParagraph = () => {
       if (!paragraphLines.length) return;
@@ -508,6 +601,19 @@
       inCodeBlock = false;
     };
 
+    const flushBlankLines = () => {
+      // Preserve extra blank lines (3+ newlines = 2+ empty lines)
+      // by rendering nbsp paragraphs for each extra line beyond 1
+      console.log("[MD_CREATE_DEBUG] flushBlankLines: consecutiveEmptyLines =", consecutiveEmptyLines);
+      if (consecutiveEmptyLines > 1) {
+        for (let i = 1; i < consecutiveEmptyLines; i++) {
+          console.log("[MD_CREATE_DEBUG] Adding nbsp paragraph for extra blank line");
+          rendered.push("<p>\u00a0</p>");
+        }
+      }
+      consecutiveEmptyLines = 0;
+    };
+
     lines.forEach((rawLine) => {
       const line = String(rawLine || "").replace(/\s+$/g, "");
       const stripped = line.trim();
@@ -522,6 +628,7 @@
       }
 
       if (stripped.startsWith("```")) {
+        flushBlankLines();
         flushParagraph();
         flushList();
         inCodeBlock = true;
@@ -532,8 +639,12 @@
       if (!stripped) {
         flushParagraph();
         flushList();
+        consecutiveEmptyLines++;
         return;
       }
+
+      // Non-empty line: flush any accumulated blank lines first
+      flushBlankLines();
 
       const headingMatch = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
       if (headingMatch) {
@@ -597,10 +708,13 @@
       paragraphLines.push(line);
     });
 
+    flushBlankLines();
     flushParagraph();
     flushList();
     flushCodeBlock();
-    return rendered.length ? rendered.join("\n") : "<p><br /></p>";
+    const result = rendered.length ? rendered.join("\n") : "<p><br /></p>";
+    console.log("[MD_CREATE_DEBUG] renderMarkdownHtml result:", result);
+    return result;
   };
 
   const rerenderPreviewFromRaw = ({ preserveFocus = false } = {}) => {
@@ -613,26 +727,37 @@
     if (!markdownValue) {
       markdownValue = summaryHtmlToMarkdown(previewEditor);
     }
+    
+    // Skip re-render if markdown hasn't changed since last render
+    if (markdownValue === lastRenderedMarkdown) {
+      console.log("[MD_CREATE_DEBUG] rerenderPreviewFromRaw: skipping, markdown unchanged");
+      return;
+    }
+    
     const htmlValue = renderMarkdownHtml(markdownValue);
+    console.log("[MD_CREATE_DEBUG] rerenderPreviewFromRaw: rendering, markdown length:", markdownValue.length, "html length:", htmlValue.length);
     const hadFocus =
       preserveFocus &&
       document.activeElement instanceof Node &&
       previewEditor.contains(document.activeElement);
-    const selectionState = hadFocus ? captureSelectionState(previewEditor) : null;
 
-    if (previewEditor.innerHTML !== htmlValue) {
-      previewEditor.innerHTML = htmlValue;
-    }
+    // Capture selection state before changing HTML
+    const selectionState = hadFocus ? captureSelectionState(previewEditor) : null;
+    
+    lastRenderedMarkdown = markdownValue;
+    previewEditor.innerHTML = htmlValue;
     updatePreviewEmptyState(previewEditor);
+    
     if (hadFocus) {
       previewEditor.focus();
+      // Try to restore selection position, fall back to end
       const restored = restoreSelectionState(previewEditor, selectionState);
       if (!restored) {
         const selection = window.getSelection();
         if (selection) {
           const range = document.createRange();
           range.selectNodeContents(previewEditor);
-          range.collapse(true);
+          range.collapse(false); // false = collapse to end
           selection.removeAllRanges();
           selection.addRange(range);
         }
@@ -648,11 +773,21 @@
   };
 
   const syncRawSummaryFromPreview = ({ emitEvents = false, force = false, forceEmit = false } = {}) => {
+    console.log("[MD_CREATE_DEBUG] syncRawSummaryFromPreview called:", { emitEvents, force, forceEmit });
     const previewEditor = getSummaryPreviewEditor();
     const rawTextarea = getRawTextarea();
-    if (!(previewEditor instanceof HTMLElement) || !(rawTextarea instanceof HTMLTextAreaElement)) return;
-    if (!force && !isSummaryCompiledMode()) return;
+    if (!(previewEditor instanceof HTMLElement) || !(rawTextarea instanceof HTMLTextAreaElement)) {
+      console.log("[MD_CREATE_DEBUG] Missing elements, returning");
+      return;
+    }
+    const compiledMode = isSummaryCompiledMode();
+    console.log("[MD_CREATE_DEBUG] compiledMode:", compiledMode);
+    if (!force && !compiledMode) {
+      console.log("[MD_CREATE_DEBUG] Not in compiled mode and not forced, returning");
+      return;
+    }
     const markdownValue = summaryHtmlToMarkdown(previewEditor);
+    console.log("[MD_CREATE_DEBUG] Synced markdown:", JSON.stringify(markdownValue));
     setRawTextareaValue(rawTextarea, markdownValue, { emitEvents, forceEmit });
     updatePreviewEmptyState(previewEditor);
   };
@@ -662,19 +797,28 @@
     summarySyncScheduled = true;
     window.requestAnimationFrame(() => {
       summarySyncScheduled = false;
+      // Don't emit events during typing to avoid preview re-render which loses cursor
       syncRawSummaryFromPreview({ emitEvents: false });
     });
   };
 
-  const scheduleCompileSync = ({ immediate = false } = {}) => {
+  const scheduleCompileSync = ({ immediate = false, emitToGradio = false } = {}) => {
     if (compileTimerId) {
       window.clearTimeout(compileTimerId);
       compileTimerId = 0;
     }
     const run = () => {
       compileTimerId = 0;
-      syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
+      console.log("[MD_CREATE_DEBUG] scheduleCompileSync running, emitToGradio:", emitToGradio);
+      // Sync markdown to textarea (always) - this preserves the content for saving
+      syncRawSummaryFromPreview({ emitEvents: false, force: true });
+      // Re-render to show compiled markdown with cursor preservation
       rerenderPreviewFromRaw({ preserveFocus: true });
+      // Emit to Gradio on blur for persistence
+      if (emitToGradio) {
+        console.log("[MD_CREATE_DEBUG] Emitting events to Gradio for persistence");
+        syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
+      }
     };
     if (immediate) {
       run();
@@ -741,13 +885,23 @@
     });
 
     previewEditor.addEventListener("input", () => {
-      if (!isSummaryCompiledMode()) return;
+      console.log("[MD_CREATE_DEBUG] Preview editor input event");
+      if (!isSummaryCompiledMode()) {
+        console.log("[MD_CREATE_DEBUG] Not in compiled mode, ignoring input");
+        return;
+      }
       scheduleRawSummarySync();
       scheduleCompileSync({ immediate: false });
     });
 
     previewEditor.addEventListener("blur", () => {
-      scheduleCompileSync({ immediate: false });
+      console.log("[MD_CREATE_DEBUG] Preview editor blur event");
+      if (!isSummaryCompiledMode()) {
+        console.log("[MD_CREATE_DEBUG] Not in compiled mode, ignoring blur");
+        return;
+      }
+      console.log("[MD_CREATE_DEBUG] Triggering immediate compile on blur with Gradio emit");
+      scheduleCompileSync({ immediate: true, emitToGradio: true });
     });
 
     previewEditor.addEventListener("paste", (event) => {
@@ -765,7 +919,6 @@
         }
       }
       scheduleRawSummarySync();
-      scheduleCompileSync({ immediate: false });
     });
   };
 
@@ -782,7 +935,14 @@
           const target = event.target;
           if (!(target instanceof HTMLElement)) return;
           if (!target.closest(`#${SUMMARY_MODE_ID}`)) return;
-          syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
+          // Only sync from preview when switching TO raw mode
+          // When switching to preview mode, Python handles the rendering
+          const mode = getSummaryModeValue();
+          console.log("[MD_CREATE_DEBUG] Mode change detected, mode:", mode);
+          if (mode === "raw") {
+            console.log("[MD_CREATE_DEBUG] Switching to raw mode, syncing from preview");
+            syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
+          }
           window.setTimeout(() => {
             scheduleRefresh();
           }, 0);

@@ -128,11 +128,11 @@ def make_unsorted_files_app() -> gr.Blocks:
             with gr.Row(elem_id="unsorted-title-row"):
                 gr.HTML("<h2>Unsorted files</h2>", elem_id="unsorted-title")
                 upload_open_btn = gr.Button(
-                    "Upload",
+                    "Upload files",
                     variant="secondary",
                     elem_id="unsorted-upload-trigger",
                     scale=0,
-                    min_width=88,
+                    min_width=152,
                     visible=False,
                 )
 

@@ -716,6 +716,18 @@ button#sources-edit-btn:focus-visible {
   margin-top: 0;
 }
 
+/* Ensure empty paragraphs and divs have height when editing */
+#sources-edit-summary-preview .sources-visual-editor--active p:empty::before,
+#sources-edit-summary-preview .sources-visual-editor--active div:empty::before {
+  content: "\00a0";
+  visibility: hidden;
+}
+
+#sources-edit-summary-preview .sources-visual-editor--active p:empty,
+#sources-edit-summary-preview .sources-visual-editor--active div:empty {
+  min-height: 1.5em;
+}
+
 #sources-edit-actions {
   gap: 0.6rem;
 }

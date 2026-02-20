@@ -12,6 +12,7 @@
   const MARKDOWN_CONTAINER_ID = "person-detail-markdown";
   const PROPOSAL_CITE_BUTTON_ID = "the-list-proposal-cite-btn";
   const PROPOSAL_BIB_BUTTON_ID = "the-list-proposal-bib-btn";
+  const PROPOSAL_ACTIONS_ID = "the-list-proposal-actions";
   const SOURCE_CITATION_OPTIONS_ID = "the-list-source-citation-options";
   const PROPOSAL_STATUS_IDS = ["the-list-proposal-status", "the-list-card-proposal-status"];
   const TOAST_ROOT_ID = "the-list-toast-root";
@@ -311,32 +312,24 @@
   };
 
   const rerenderCompiledPreviewFromRaw = ({ selectionState = null } = {}) => {
-    if (!isCompiledMode()) return;
-    const rawInput = resolveModeInput("raw");
-    const compiledInput = resolveModeInput("compiled");
-    if (!(rawInput instanceof HTMLInputElement) || !(compiledInput instanceof HTMLInputElement)) return;
-    activateModeInput(rawInput);
-    window.setTimeout(() => {
-      activateModeInput(compiledInput);
-      if (!selectionState) return;
-      let attempts = 0;
-      const restoreSelection = () => {
-        const editor = getPreviewEditor();
-        if (!(editor instanceof HTMLElement) || !isCompiledMode()) {
-          if (attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
-            attempts += 1;
-            window.setTimeout(restoreSelection, COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS);
-          }
-          return;
-        }
-        const restored = restorePreviewTextSelectionState(editor, selectionState);
-        if (!restored && attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
+    if (!selectionState) return;
+    let attempts = 0;
+    const restoreSelection = () => {
+      const editor = getPreviewEditor();
+      if (!(editor instanceof HTMLElement) || !isCompiledMode()) {
+        if (attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
           attempts += 1;
           window.setTimeout(restoreSelection, COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS);
         }
-      };
-      window.setTimeout(restoreSelection, 0);
-    }, 40);
+        return;
+      }
+      const restored = restorePreviewTextSelectionState(editor, selectionState);
+      if (!restored && attempts < COMPILED_PREVIEW_RESTORE_RETRY_MAX) {
+        attempts += 1;
+        window.setTimeout(restoreSelection, COMPILED_PREVIEW_RESTORE_RETRY_DELAY_MS);
+      }
+    };
+    window.setTimeout(restoreSelection, 40);
   };
 
   const isElementVisible = (node) => {
@@ -459,6 +452,12 @@
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
       textarea.dispatchEvent(new Event("change", { bubbles: true }));
     }
+  };
+
+  const forceEmitRawTextarea = () => {
+    const textarea = getRawTextarea();
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    setRawTextareaValue(textarea, textarea.value || "", { emitEvents: true, forceEmit: true });
   };
 
   const insertTextAtCursor = (text) => {
@@ -3475,6 +3474,7 @@
       const markdown = String(syncRawFromPreview({ emitEvents: false }) || "");
       if (markdown === lastCompiledPreviewMarkdown) return;
       lastCompiledPreviewMarkdown = markdown;
+      syncRawFromPreview({ emitEvents: true, forceEmit: true });
       rerenderCompiledPreviewFromRaw({ selectionState });
     };
     if (immediate) {
@@ -4046,6 +4046,33 @@
       userAgent: navigator.userAgent,
     });
     observer.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (!target.closest(`#${MODE_CONTAINER_ID}`)) return;
+        if (isCompiledMode()) {
+          syncRawFromPreview({ emitEvents: true, forceEmit: true });
+          refreshCompiledPreviewSnapshot();
+          return;
+        }
+        forceEmitRawTextarea();
+      },
+      true,
+    );
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (!target.closest(`#${PROPOSAL_ACTIONS_ID} button`)) return;
+        if (!isCompiledMode()) return;
+        syncRawFromPreview({ emitEvents: true, forceEmit: true });
+        refreshCompiledPreviewSnapshot();
+      },
+      true,
+    );
     document.addEventListener("change", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;

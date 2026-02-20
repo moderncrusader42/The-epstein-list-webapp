@@ -8493,6 +8493,15 @@ def make_people_app() -> gr.Blocks:
             inputs=[proposal_view_mode, proposal_markdown],
             outputs=[proposal_markdown, proposal_preview],
         )
+        proposal_markdown.input(
+            timed_page_load(
+                "/the-list",
+                _toggle_proposal_markdown_view,
+                label="live_toggle_proposal_markdown_view",
+            ),
+            inputs=[proposal_view_mode, proposal_markdown],
+            outputs=[proposal_markdown, proposal_preview],
+        )
 
         submit_markdown_proposal_btn.click(
             timed_page_load("/the-list", _submit_markdown_proposal, label="submit_markdown_proposal"),

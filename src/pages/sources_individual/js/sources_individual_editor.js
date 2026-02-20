@@ -1,6 +1,8 @@
 (function () {
   if (typeof window === "undefined") return;
 
+  console.log("=== [MD_DEBUG] sources_individual_editor.js LOADED v2 ===");
+
   const EDIT_SHELL_ID = "sources-edit-shell";
   const NAME_INPUT_ID = "sources-edit-name";
   const TAGS_INPUT_ID = "sources-edit-tags";
@@ -14,6 +16,7 @@
   const SUMMARY_SAVE_BUTTON_ID = "sources-edit-save-btn";
   const SUMMARY_VISUAL_EDITOR_CLASS = "sources-visual-editor";
   const SUMMARY_VISUAL_EDITOR_ACTIVE_CLASS = "sources-visual-editor--active";
+  const SUMMARY_COMPILE_DELAY_MS = 1000;
   const TITLE_SELECTOR = "#sources-title h2";
   const TAGS_SELECTOR = "#sources-browser-head-meta .source-browser-head__tags";
   const TAG_SUGGESTION_LIMIT = 8;
@@ -21,6 +24,8 @@
   let refreshScheduled = false;
   let inlineWasActive = false;
   let summarySyncScheduled = false;
+  let summaryCompileTimerId = 0;
+  let lastCompiledSummaryMarkdown = "";
   let summaryGlobalHandlersBound = false;
   const boundSummaryEditors = new WeakSet();
 
@@ -160,15 +165,20 @@
     );
   };
 
-  const getSummaryModeValue = () => {
-    const checked = ensureRoot().querySelector(`#${SUMMARY_MODE_ID} input[type="radio"]:checked`);
-    if (!(checked instanceof HTMLInputElement)) return "";
-    const value = String(checked.value || "").trim().toLowerCase();
-    if (value) return value;
-    const label = String(checked.closest("label")?.textContent || "").trim().toLowerCase();
+  const getSummaryModeFromInput = (input) => {
+    if (!(input instanceof HTMLInputElement)) return "";
+    const value = String(input.value || "").trim().toLowerCase();
+    if (value === "raw") return "raw";
+    if (value === "preview" || value === "compiled") return "preview";
+    const label = String(input.closest("label")?.textContent || "").trim().toLowerCase();
     if (label.includes("compiled") || label.includes("preview")) return "preview";
     if (label.includes("raw")) return "raw";
     return "";
+  };
+
+  const getSummaryModeValue = () => {
+    const checked = ensureRoot().querySelector(`#${SUMMARY_MODE_ID} input[type="radio"]:checked`);
+    return checked instanceof HTMLInputElement ? getSummaryModeFromInput(checked) : "";
   };
 
   const isSummaryCompiledMode = () => {
@@ -176,14 +186,50 @@
     return mode === "preview" || mode === "compiled";
   };
 
-  const setSummaryRawTextareaValue = (textarea, value, { emitEvents = false } = {}) => {
-    if (!(textarea instanceof HTMLTextAreaElement)) return;
+  const resolveSummaryModeInput = (targetMode) => {
+    const normalizedTarget = String(targetMode || "").trim().toLowerCase();
+    const inputs = Array.from(ensureRoot().querySelectorAll(`#${SUMMARY_MODE_ID} input[type="radio"]`)).filter(
+      (node) => node instanceof HTMLInputElement,
+    );
+    for (const input of inputs) {
+      const mode = getSummaryModeFromInput(input);
+      if (normalizedTarget === "raw") {
+        if (mode === "raw") return input;
+        continue;
+      }
+      if (mode === "preview" || mode === "compiled") return input;
+    }
+    return null;
+  };
+
+  const activateSummaryModeInput = (input) => {
+    if (!(input instanceof HTMLInputElement)) return;
+    const clickable = input.closest("label");
+    if (clickable instanceof HTMLElement) {
+      clickable.click();
+      return;
+    }
+    input.click();
+  };
+
+  const setSummaryRawTextareaValue = (textarea, value, { emitEvents = false, forceEmit = false } = {}) => {
+    if (!(textarea instanceof HTMLTextAreaElement)) return false;
     const nextValue = String(value || "");
-    if ((textarea.value || "") === nextValue) return;
-    textarea.value = nextValue;
-    if (!emitEvents) return;
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    const currentValue = textarea.value || "";
+    const changed = currentValue !== nextValue;
+    console.log("[MD_DEBUG] setSummaryRawTextareaValue:");
+    console.log("  Current value:", JSON.stringify(currentValue));
+    console.log("  Next value:", JSON.stringify(nextValue));
+    console.log("  Changed:", changed, "emitEvents:", emitEvents, "forceEmit:", forceEmit);
+    if (changed) {
+      textarea.value = nextValue;
+    }
+    if (emitEvents && (changed || forceEmit)) {
+      console.log("[MD_DEBUG] Dispatching input and change events");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return changed;
   };
 
   const collapseInlineText = (value) =>
@@ -192,12 +238,17 @@
       .replace(/[ \t\r\f\v]+/g, " ")
       .trim();
 
-  const normalizeMarkdownOutput = (value) =>
-    String(value || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+  const normalizeMarkdownOutput = (value) => {
+    const step1 = String(value || "").replace(/\r\n/g, "\n");
+    const step2 = step1.replace(/[ \t]+$/gm, "");
+    const step3 = step2.trim();
+    console.log("[MD_DEBUG] normalizeMarkdownOutput:");
+    console.log("  Input:", JSON.stringify(value));
+    console.log("  After \\r\\n->\\n:", JSON.stringify(step1));
+    console.log("  After trailing space strip:", JSON.stringify(step2));
+    console.log("  After trim:", JSON.stringify(step3));
+    return step3;
+  };
 
   const renderInlineMarkdown = (node) => {
     if (node instanceof Text) {
@@ -303,14 +354,21 @@
 
   const renderBlockMarkdown = (node, depth = 0) => {
     if (node instanceof Text) {
-      return collapseInlineText(node.textContent || "");
+      const result = collapseInlineText(node.textContent || "");
+      console.log(`[MD_DEBUG] renderBlockMarkdown Text node: ${JSON.stringify(node.textContent)} -> ${JSON.stringify(result)}`);
+      return result;
     }
     if (!(node instanceof Element)) return "";
     const tagName = node.tagName.toLowerCase();
+    console.log(`[MD_DEBUG] renderBlockMarkdown Element: <${tagName}>, innerHTML: ${node.innerHTML.substring(0, 100)}`);
     const blockChildren = () =>
       Array.from(node.childNodes)
         .map((child) => renderBlockMarkdown(child, depth))
         .join("");
+    if (tagName === "br") {
+      console.log("[MD_DEBUG] renderBlockMarkdown: BR tag -> returning newline");
+      return "\n";
+    }
     if (/^h[1-6]$/.test(tagName)) {
       const level = Number.parseInt(tagName.charAt(1), 10);
       const content = collapseInlineText(renderInlineMarkdown(node));
@@ -319,7 +377,11 @@
     }
     if (tagName === "p" || tagName === "div") {
       const content = collapseInlineText(renderInlineMarkdown(node));
-      if (!content) return "";
+      console.log(`[MD_DEBUG] renderBlockMarkdown P/DIV: content=${JSON.stringify(content)}, empty=${!content}`);
+      if (!content) {
+        console.log("[MD_DEBUG] renderBlockMarkdown: Empty P/DIV -> returning single newline");
+        return "\n";
+      }
       return `${content}\n\n`;
     }
     if (tagName === "pre") {
@@ -369,20 +431,41 @@
   };
 
   const summaryHtmlToMarkdown = (root) => {
-    if (!(root instanceof HTMLElement)) return "";
+    if (!(root instanceof HTMLElement)) {
+      console.log("[MD_DEBUG] summaryHtmlToMarkdown: root is not HTMLElement");
+      return "";
+    }
+    console.log("[MD_DEBUG] summaryHtmlToMarkdown: root innerHTML:", root.innerHTML);
+    console.log("[MD_DEBUG] summaryHtmlToMarkdown: root childNodes count:", root.childNodes.length);
     const markdown = Array.from(root.childNodes)
-      .map((child) => renderBlockMarkdown(child, 0))
+      .map((child, i) => {
+        const result = renderBlockMarkdown(child, 0);
+        console.log(`[MD_DEBUG] Child ${i} (${child.nodeName}): rendered as`, JSON.stringify(result));
+        return result;
+      })
       .join("");
-    return normalizeMarkdownOutput(markdown);
+    console.log("[MD_DEBUG] summaryHtmlToMarkdown: raw markdown before normalize:", JSON.stringify(markdown));
+    const normalized = normalizeMarkdownOutput(markdown);
+    console.log("[MD_DEBUG] summaryHtmlToMarkdown: normalized markdown:", JSON.stringify(normalized));
+    return normalized;
   };
 
-  const syncRawSummaryFromPreview = ({ emitEvents = false, force = false } = {}) => {
+  const syncRawSummaryFromPreview = ({ emitEvents = false, force = false, forceEmit = false } = {}) => {
+    console.log("[MD_DEBUG] syncRawSummaryFromPreview called with:", { emitEvents, force, forceEmit });
     const previewEditor = getSummaryPreviewEditor();
     const rawTextarea = getSummaryRawTextarea();
-    if (!(previewEditor instanceof HTMLElement) || !(rawTextarea instanceof HTMLTextAreaElement)) return;
-    if (!force && !isSummaryCompiledMode()) return;
+    if (!(previewEditor instanceof HTMLElement) || !(rawTextarea instanceof HTMLTextAreaElement)) {
+      console.log("[MD_DEBUG] syncRawSummaryFromPreview: missing elements");
+      return "";
+    }
+    if (!force && !isSummaryCompiledMode()) {
+      console.log("[MD_DEBUG] syncRawSummaryFromPreview: not in compiled mode and not forced, returning current value");
+      return String(rawTextarea.value || "");
+    }
     const markdownValue = summaryHtmlToMarkdown(previewEditor);
-    setSummaryRawTextareaValue(rawTextarea, markdownValue, { emitEvents });
+    console.log("[MD_DEBUG] syncRawSummaryFromPreview: setting textarea to:", JSON.stringify(markdownValue));
+    setSummaryRawTextareaValue(rawTextarea, markdownValue, { emitEvents, forceEmit });
+    return markdownValue;
   };
 
   const scheduleRawSummarySync = () => {
@@ -392,6 +475,43 @@
       summarySyncScheduled = false;
       syncRawSummaryFromPreview({ emitEvents: false });
     });
+  };
+
+  const rerenderSummaryPreviewFromRaw = () => {
+    if (!isSummaryCompiledMode()) return;
+    const rawInput = resolveSummaryModeInput("raw");
+    const compiledInput = resolveSummaryModeInput("compiled");
+    if (!(rawInput instanceof HTMLInputElement) || !(compiledInput instanceof HTMLInputElement)) return;
+    activateSummaryModeInput(rawInput);
+    window.setTimeout(() => {
+      activateSummaryModeInput(compiledInput);
+    }, 40);
+  };
+
+  const scheduleSummaryCompiledRerender = ({ immediate = false } = {}) => {
+    if (summaryCompileTimerId) {
+      window.clearTimeout(summaryCompileTimerId);
+      summaryCompileTimerId = 0;
+    }
+    const run = () => {
+      summaryCompileTimerId = 0;
+      if (!isSummaryCompiledMode()) return;
+      const markdownValue = String(syncRawSummaryFromPreview({ emitEvents: false, force: true }) || "");
+      if (markdownValue === lastCompiledSummaryMarkdown) return;
+      lastCompiledSummaryMarkdown = markdownValue;
+      rerenderSummaryPreviewFromRaw();
+    };
+    if (immediate) {
+      run();
+      return;
+    }
+    summaryCompileTimerId = window.setTimeout(run, SUMMARY_COMPILE_DELAY_MS);
+  };
+
+  const refreshCompiledSummarySnapshot = () => {
+    const rawTextarea = getSummaryRawTextarea();
+    if (!(rawTextarea instanceof HTMLTextAreaElement)) return;
+    lastCompiledSummaryMarkdown = String(rawTextarea.value || "");
   };
 
   const updateSummaryPreviewEditorMode = () => {
@@ -415,13 +535,6 @@
     const previewEditor = getSummaryPreviewEditor();
     if (!(previewEditor instanceof HTMLElement) || boundSummaryEditors.has(previewEditor)) return;
     boundSummaryEditors.add(previewEditor);
-    previewEditor.addEventListener("input", () => {
-      if (!isSummaryCompiledMode()) return;
-      scheduleRawSummarySync();
-    });
-    previewEditor.addEventListener("blur", () => {
-      syncRawSummaryFromPreview({ emitEvents: true });
-    });
     previewEditor.addEventListener("paste", (event) => {
       if (!isSummaryCompiledMode()) return;
       const text = (event.clipboardData || window.clipboardData)?.getData("text/plain");
@@ -436,7 +549,6 @@
           selection.getRangeAt(0).insertNode(document.createTextNode(text));
         }
       }
-      scheduleRawSummarySync();
     });
   };
 
@@ -458,8 +570,26 @@
           const target = event.target;
           if (!(target instanceof HTMLElement)) return;
           if (!target.closest(`#${SUMMARY_MODE_ID}`)) return;
-          syncRawSummaryFromPreview({ emitEvents: true, force: true });
+          console.log("[MD_DEBUG] Mode change event triggered");
+          let nextMode = "";
+          if (target instanceof HTMLInputElement) {
+            nextMode = getSummaryModeFromInput(target);
+          } else {
+            const modeInput = target.closest("label")?.querySelector("input[type='radio']");
+            if (modeInput instanceof HTMLInputElement) {
+              nextMode = getSummaryModeFromInput(modeInput);
+            }
+          }
+          if (!nextMode) {
+            nextMode = getSummaryModeValue();
+          }
+          console.log("[MD_DEBUG] Next mode:", nextMode);
+          if (nextMode === "raw") {
+            console.log("[MD_DEBUG] Switching to raw mode, calling syncRawSummaryFromPreview");
+            syncRawSummaryFromPreview({ emitEvents: true, force: true });
+          }
           window.setTimeout(() => {
+            refreshCompiledSummarySnapshot();
             scheduleRefresh();
           }, 0);
         },
@@ -471,7 +601,10 @@
           const target = event.target;
           if (!(target instanceof HTMLElement)) return;
           if (!target.closest(`#${SUMMARY_SAVE_BUTTON_ID}`)) return;
-          syncRawSummaryFromPreview({ emitEvents: true, force: true });
+          if (isSummaryCompiledMode()) {
+            syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
+            refreshCompiledSummarySnapshot();
+          }
         },
         true,
       );
@@ -977,6 +1110,7 @@
 
   const init = () => {
     scheduleRefresh();
+    refreshCompiledSummarySnapshot();
     const observer = new MutationObserver(() => {
       scheduleRefresh();
     });

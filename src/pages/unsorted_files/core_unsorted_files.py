@@ -1585,7 +1585,7 @@ def _load_unsorted_files_page(request: gr.Request):
     return (
         bool(can_submit),
         bool(is_admin),
-        gr.update(visible=False),
+        gr.update(visible=bool(is_admin), interactive=bool(is_admin)),
         gr.update(visible=False),
         gr.update(value="", visible=False),
         files,

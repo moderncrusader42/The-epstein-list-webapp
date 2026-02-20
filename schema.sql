@@ -563,4 +563,3 @@ CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_proposal
 
 CREATE INDEX IF NOT EXISTS idx_unsorted_tag_proposal_tags_code
   ON app.unsorted_file_tag_proposal_tags(tag_code);
-º

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import html
 import logging
 from pathlib import Path
 
 import gradio as gr
 
-from src.login_logic import get_user
 from src.page_timing import timed_page_load
 from src.pages.header import render_header, with_light_mode_head
 from src.pages.sources_list.core_sources import (
@@ -23,7 +21,6 @@ logger = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent
 CSS_PATH = ASSETS_DIR / "css" / "sources_page.css"
 TAG_FILTER_JS_PATH = ASSETS_DIR / "js" / "sources_tag_filter.js"
-PROPOSAL_SIGNIN_REQUIRED_MESSAGE = "You need to sign in before submitting a proposal"
 
 
 def _read_asset(path: Path) -> str:
@@ -45,20 +42,6 @@ def _load_tag_filter_js() -> str:
     return f"<script>\n{script}\n</script>"
 
 
-def _render_proposal_guard_toast(message: str) -> str:
-    normalized = str(message or "").strip()
-    if not normalized:
-        return ""
-    return f"<div class='proposal-signin-toast'>{html.escape(normalized)}</div>"
-
-
-def _open_source_create_page(request: gr.Request):
-    user = get_user(request) or {}
-    if not user:
-        return False, _render_proposal_guard_toast(PROPOSAL_SIGNIN_REQUIRED_MESSAGE)
-    return True, ""
-
-
 def _header_sources(request: gr.Request):
     return render_header(path="/sources", request=request)
 
@@ -76,7 +59,6 @@ def make_sources_app() -> gr.Blocks:
 
         all_sources_state = gr.State([])
         tag_filter_selection_state = gr.State([])
-        create_redirect_state = gr.State(False)
 
         with gr.Column(elem_id="sources-shell"):
             with gr.Row(elem_id="sources-title-row"):
@@ -114,7 +96,6 @@ def make_sources_app() -> gr.Blocks:
 
             create_status = gr.Markdown(value="", visible=False, elem_id="sources-create-status")
             sources_html = gr.HTML(elem_id="sources-catalog")
-            proposal_guard_toast = gr.HTML(value="", elem_id="proposal-signin-toast-root")
 
         app.load(timed_page_load("/sources", _header_sources), outputs=[hdr])
         app.load(
@@ -150,14 +131,10 @@ def make_sources_app() -> gr.Blocks:
         )
 
         open_create_page_btn.click(
-            timed_page_load("/sources", _open_source_create_page, label="open_source_create_page"),
-            outputs=[create_redirect_state, proposal_guard_toast],
-            show_progress=False,
-        ).then(
             fn=None,
-            inputs=[create_redirect_state],
+            inputs=None,
             outputs=None,
-            js="(shouldRedirect) => { if (shouldRedirect) { window.location.assign('/source-create/'); } }",
+            js="() => { window.location.assign('/source-create/'); }",
             show_progress=False,
         )
 

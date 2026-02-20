@@ -99,35 +99,6 @@ def ensure_user(
         {"email": resolved_email},
     )
 
-    # Bootstrap: first authenticated account becomes full-access creator.
-    # so privilege management is reachable without manual SQL seeding.
-    has_creator = session.execute(
-        text(
-            """
-            SELECT 1
-            FROM app.user_privileges
-            WHERE creator = TRUE
-            LIMIT 1
-            """
-        )
-    ).scalar_one_or_none()
-    if has_creator is None:
-        session.execute(
-            text(
-                """
-                INSERT INTO app.user_privileges (email, base_user, reviewer, editor, admin, creator)
-                VALUES (:email, TRUE, TRUE, TRUE, TRUE, TRUE)
-                ON CONFLICT (email) DO UPDATE
-                SET base_user = TRUE,
-                    reviewer = TRUE,
-                    editor = TRUE,
-                    admin = TRUE,
-                    creator = TRUE
-                """
-            ),
-            {"email": resolved_email},
-        )
-
     return int(row["id"]), resolved_email, row["name"]
 
 
