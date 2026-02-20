@@ -225,7 +225,8 @@
 }
 
 #the-list-card-edit-btn,
-#the-list-markdown-edit-btn {
+#the-list-markdown-edit-btn,
+#the-list-delete-btn {
   flex: 0 0 auto !important;
   min-width: 0 !important;
   margin-left: 0;
@@ -261,6 +262,35 @@ button#the-list-markdown-edit-btn:hover,
 button#the-list-markdown-edit-btn:focus-visible {
   background-color: #eff6ff !important;
   border-color: #93c5fd !important;
+}
+
+#the-list-delete-btn button,
+button#the-list-delete-btn {
+  min-width: 74px !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  padding: 0 0.68rem !important;
+  border: 1px solid #fca5a5 !important;
+  background: linear-gradient(180deg, #fff5f5 0%, #fee2e2 100%) !important;
+  color: #b91c1c !important;
+  font-size: 0.76rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 8px 18px rgba(127, 29, 29, 0.16);
+}
+
+#the-list-delete-btn button:hover,
+#the-list-delete-btn button:focus-visible,
+button#the-list-delete-btn:hover,
+button#the-list-delete-btn:focus-visible {
+  background: linear-gradient(180deg, #fee2e2 0%, #fecaca 100%) !important;
+  border-color: #f87171 !important;
+  color: #991b1b !important;
+}
+
+#the-list-delete-status {
+  margin: 0 0 0.4rem;
 }
 
 #the-list-review-link {

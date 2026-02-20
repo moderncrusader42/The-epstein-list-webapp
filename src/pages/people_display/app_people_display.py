@@ -18,6 +18,7 @@ from src.pages.people_display.core_people import (
     _build_proposal_help_messages,
     _cancel_card_editor,
     _cancel_markdown_editor,
+    _delete_person_card_article,
     _fetch_person,
     _fetch_source_citation_options,
     _fetch_tag_catalog,
@@ -33,6 +34,7 @@ from src.pages.people_display.core_people import (
     _toggle_card_editor,
     _toggle_markdown_editor,
     _toggle_proposal_markdown_view,
+    _user_has_admin_privilege,
     _user_has_editor_privilege,
 )
 
@@ -96,6 +98,7 @@ def _empty_detail_state(
         gr.update(value=EDIT_TOGGLE_BUTTON_LABEL, visible=False),
         False,
         gr.update(value=EDIT_TOGGLE_BUTTON_LABEL, visible=False),
+        gr.update(value="Delete", visible=False),
         gr.update(value="", visible=False),
         gr.update(visible=False),
         markdown_help,
@@ -108,12 +111,14 @@ def _empty_detail_state(
         "",
         "",
         citation_source_options,
+        gr.update(value="", visible=False),
     )
 
 
 def _load_people_display_page(request: gr.Request):
     try:
         user, can_review, can_submit = _role_flags_from_request(request)
+        can_delete = _user_has_admin_privilege(user)
         user_name = str(user.get("name") or user.get("email") or "User")
         user_email = str(user.get("email") or "").strip().lower()
         markdown_help, card_help = _build_proposal_help_messages(
@@ -163,6 +168,7 @@ def _load_people_display_page(request: gr.Request):
             gr.update(value=EDIT_TOGGLE_BUTTON_LABEL, visible=can_submit),
             False,
             gr.update(value=EDIT_TOGGLE_BUTTON_LABEL, visible=can_submit),
+            gr.update(value="Delete", visible=can_delete),
             gr.update(value=_render_review_link_button(slug), visible=can_review),
             gr.update(visible=False),
             markdown_help,
@@ -175,6 +181,7 @@ def _load_people_display_page(request: gr.Request):
             tags_value,
             "",
             citation_source_options,
+            gr.update(value="", visible=False),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load people display page: %s", exc)
@@ -182,6 +189,13 @@ def _load_people_display_page(request: gr.Request):
             "<h2>The List</h2>",
             _render_missing_person("load-error"),
         )
+
+
+def _delete_profile_and_reload(current_slug: str, request: gr.Request):
+    _, status_message = _delete_person_card_article(current_slug, request)
+    refreshed_state = list(_load_people_display_page(request))
+    refreshed_state[-1] = gr.update(value=status_message, visible=bool(status_message))
+    return tuple(refreshed_state)
 
 
 def make_people_display_app() -> gr.Blocks:
@@ -212,8 +226,15 @@ def make_people_display_app() -> gr.Blocks:
                 variant="secondary",
                 elem_id="the-list-card-edit-btn",
             )
+            delete_btn = gr.Button(
+                "Delete",
+                visible=False,
+                variant="stop",
+                elem_id="the-list-delete-btn",
+            )
             review_btn_html = gr.HTML(visible=False, elem_id="the-list-review-link")
             detail_html = gr.HTML(visible=False, elem_id="person-detail-hero")
+            delete_status = gr.Markdown(value="", visible=False, elem_id="the-list-delete-status")
 
             with gr.Column(visible=False, elem_id="the-list-card-proposal-shell") as card_proposal_shell:
                 card_proposal_help = gr.Markdown(elem_id="the-list-card-proposal-help")
@@ -348,35 +369,45 @@ def make_people_display_app() -> gr.Blocks:
                     cancel_markdown_edit_btn = gr.Button("Cancel", variant="secondary")
                 proposal_status = gr.Markdown(elem_id="the-list-proposal-status")
 
+        page_state_outputs = [
+            title_md,
+            detail_html,
+            detail_markdown,
+            current_slug,
+            current_markdown,
+            current_name,
+            current_bucket,
+            current_tags,
+            markdown_edit_mode_state,
+            markdown_edit_btn,
+            card_edit_mode_state,
+            card_edit_btn,
+            delete_btn,
+            review_btn_html,
+            proposal_shell,
+            proposal_help,
+            proposal_markdown,
+            proposal_status,
+            card_proposal_shell,
+            card_proposal_help,
+            card_proposal_name,
+            card_proposal_bucket,
+            card_proposal_tags,
+            card_proposal_status,
+            citation_source_options,
+            delete_status,
+        ]
+
         app.load(timed_page_load("/people-display", _header_people_display), outputs=[hdr])
         app.load(
             timed_page_load("/people-display", _load_people_display_page),
-            outputs=[
-                title_md,
-                detail_html,
-                detail_markdown,
-                current_slug,
-                current_markdown,
-                current_name,
-                current_bucket,
-                current_tags,
-                markdown_edit_mode_state,
-                markdown_edit_btn,
-                card_edit_mode_state,
-                card_edit_btn,
-                review_btn_html,
-                proposal_shell,
-                proposal_help,
-                proposal_markdown,
-                proposal_status,
-                card_proposal_shell,
-                card_proposal_help,
-                card_proposal_name,
-                card_proposal_bucket,
-                card_proposal_tags,
-                card_proposal_status,
-                citation_source_options,
-            ],
+            outputs=page_state_outputs,
+        )
+
+        delete_btn.click(
+            timed_page_load("/people-display", _delete_profile_and_reload, label="delete_profile"),
+            inputs=[current_slug],
+            outputs=page_state_outputs,
         )
 
         markdown_edit_btn.click(

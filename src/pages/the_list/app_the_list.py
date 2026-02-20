@@ -175,7 +175,12 @@ def _update_people_cards_by_tag_filter(
     next_selection = current_filtered
     dropdown_update = gr.update()
 
-    if current_has_all and not previous_has_all:
+    # Some UI updates can emit only "All" without the explicit tag values.
+    # Normalize that to the full selection so default state stays stable.
+    if current_has_all and not current_filtered:
+        next_selection = [TAG_FILTER_ALL_OPTION, *allowed_values] if allowed_values else [TAG_FILTER_ALL_OPTION]
+        dropdown_update = gr.update(value=next_selection)
+    elif current_has_all and not previous_has_all:
         if (not current_filtered) or (current_filtered == previous_filtered):
             next_selection = [TAG_FILTER_ALL_OPTION, *allowed_values]
             dropdown_update = gr.update(value=next_selection)
@@ -291,7 +296,7 @@ def make_the_list_app() -> gr.Blocks:
                     tag_filter = gr.Dropdown(
                         label="Filter by tags",
                         choices=[(TAG_FILTER_ALL_OPTION, TAG_FILTER_ALL_OPTION)],
-                        value=[],
+                        value=[TAG_FILTER_ALL_OPTION],
                         multiselect=True,
                         allow_custom_value=False,
                         interactive=True,
@@ -307,7 +312,7 @@ def make_the_list_app() -> gr.Blocks:
                     min_width=34,
                 )
 
-            tag_filter_selection_state = gr.State([])
+            tag_filter_selection_state = gr.State([TAG_FILTER_ALL_OPTION])
             cards_html = gr.HTML(elem_id="people-cards")
             proposal_guard_toast = gr.HTML(value="", elem_id="proposal-signin-toast-root")
 

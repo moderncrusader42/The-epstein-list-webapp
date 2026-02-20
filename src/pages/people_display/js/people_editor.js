@@ -7,6 +7,7 @@
   const CARD_TITLE_ACTIONS_SLOT_ID = "person-detail-card-title-actions-slot";
   const PAGE_TITLE_ROW_ID = "people-title-row";
   const CARD_EDIT_BUTTON_ID = "the-list-card-edit-btn";
+  const DELETE_BUTTON_ID = "the-list-delete-btn";
   const MARKDOWN_EDIT_BUTTON_ID = "the-list-markdown-edit-btn";
   const REVIEW_LINK_ID = "the-list-review-link";
   const MARKDOWN_CONTAINER_ID = "person-detail-markdown";
@@ -3901,10 +3902,14 @@
     const titleSlot = document.getElementById(CARD_TITLE_ACTIONS_SLOT_ID);
     const pageTitleRow = document.getElementById(PAGE_TITLE_ROW_ID);
     const cardEditButton = document.getElementById(CARD_EDIT_BUTTON_ID);
+    const deleteButton = document.getElementById(DELETE_BUTTON_ID);
     const reviewLink = document.getElementById(REVIEW_LINK_ID);
     if (titleSlot) {
       if (cardEditButton && cardEditButton.parentElement !== titleSlot) {
         titleSlot.appendChild(cardEditButton);
+      }
+      if (deleteButton && deleteButton.parentElement !== titleSlot) {
+        titleSlot.appendChild(deleteButton);
       }
     }
     if (pageTitleRow) {

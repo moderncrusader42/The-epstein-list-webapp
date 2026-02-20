@@ -1917,6 +1917,13 @@ def _user_has_editor_privilege(user: Dict[str, object]) -> bool:
     return _is_truthy(privileges.get("editor"))
 
 
+def _user_has_admin_privilege(user: Dict[str, object]) -> bool:
+    privileges = user.get("privileges")
+    if not isinstance(privileges, dict):
+        return False
+    return _is_truthy(privileges.get("admin")) or _is_truthy(privileges.get("creator"))
+
+
 def _resolve_request_user_id(user: Dict[str, object]) -> int:
     for key in ("user_id", "employee_id", "id"):
         raw_value = user.get(key)
@@ -2232,6 +2239,61 @@ def _cancel_card_editor(current_name: str, current_bucket: str, current_tags: st
         gr.update(value=None),
         gr.update(value=""),
     )
+
+
+def _delete_person_card_article(current_slug: str, request: gr.Request) -> tuple[bool, str]:
+    try:
+        user, _, _ = _role_flags_from_request(request)
+        if not user:
+            return False, "❌ You must be logged in to delete a profile."
+        if not _user_has_admin_privilege(user):
+            return False, "❌ Only admins can delete card + article profiles."
+
+        slug = str(current_slug or "").strip().lower()
+        if not slug:
+            return False, "❌ Open a profile before trying to delete it."
+
+        _ensure_local_db()
+        with session_scope() as session:
+            schema_name = _resolve_people_schema(session)
+            deleted_slug = session.execute(
+                text(
+                    f"""
+                    DELETE FROM {schema_name}.people_cards
+                    WHERE slug = :slug
+                    RETURNING slug
+                    """
+                ),
+                {"slug": slug},
+            ).scalar_one_or_none()
+            deleted_orphan_article_slug = None
+            if not deleted_slug:
+                deleted_orphan_article_slug = session.execute(
+                    text(
+                        f"""
+                        DELETE FROM {schema_name}.people_articles
+                        WHERE person_slug = :slug
+                        RETURNING person_slug
+                        """
+                    ),
+                    {"slug": slug},
+                ).scalar_one_or_none()
+
+        if not deleted_slug and not deleted_orphan_article_slug:
+            return False, "❌ Profile not found or already deleted."
+
+        actor_email = str(user.get("email") or "").strip().lower()
+        logger.info(
+            "people_display.profile_deleted slug=%s actor=%s deleted_card=%s deleted_orphan_article=%s",
+            slug,
+            actor_email or "unknown",
+            bool(deleted_slug),
+            bool(deleted_orphan_article_slug),
+        )
+        return True, f"✅ Deleted `{slug}` card + article."
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to delete people profile: %s", exc)
+        return False, f"❌ Could not delete profile: {exc}"
 
 
 def _submit_markdown_proposal(
