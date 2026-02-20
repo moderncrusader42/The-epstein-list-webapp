@@ -1124,7 +1124,7 @@ def _render_unsorted_explorer(files: Sequence[Dict[str, object]] | None) -> str:
         "</div>"
         "<div class='unsorted-browser__surface'>"
         "<div class='unsorted-browser__list-header'>"
-        "<span>Name</span><span>Type</span><span>Size</span><span>Uploaded</span>"
+        "<span>Unsorted file</span><span>Type</span><span>Size</span><span>Uploaded</span>"
         "</div>"
         "<div class='unsorted-browser__list'>"
         f"{''.join(list_rows)}"

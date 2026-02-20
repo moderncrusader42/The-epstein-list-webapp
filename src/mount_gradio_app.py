@@ -1,4 +1,9 @@
 # src/mount_gradio_app.py
+import logging
+import os
+import re
+from pathlib import Path
+
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 import gradio as gr
@@ -12,6 +17,8 @@ from src.privileges import (
     default_page_path,
 )
 
+logger = logging.getLogger(__name__)
+
 GRADIO_PUBLIC_PREFIXES = (
     "/gradio_api", "/file", "/assets", "/static", "/config",
     "/proxy", "/localfiles", "/theme.css", "/favicon.ico",
@@ -20,6 +27,99 @@ GRADIO_PUBLIC_PREFIXES = (
 
 # Public non-auth endpoints (none for the timesheet app)
 PUBLIC_EXTRA: tuple[str, ...] = ()
+
+_GRADIO_UPLOAD_PATCH_APPLIED = False
+
+
+def _resolve_gradio_upload_chunk_size() -> int:
+    raw_value = str(os.getenv("THE_LIST_GRADIO_UPLOAD_CHUNK_SIZE", "1")).strip()
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid THE_LIST_GRADIO_UPLOAD_CHUNK_SIZE=%r; using default 1.",
+            raw_value,
+        )
+        return 1
+    return max(1, min(1000, parsed))
+
+
+def _candidate_gradio_js_assets() -> list[Path]:
+    package_root = Path(gr.__file__).resolve().parent
+    candidates: list[Path] = [package_root / "_frontend_code" / "client" / "dist" / "index.js"]
+
+    frontend_assets = package_root / "templates" / "frontend" / "assets"
+    if frontend_assets.exists():
+        candidates.extend(sorted(frontend_assets.glob("index-*.js")))
+
+    node_server_chunks = package_root / "templates" / "node" / "build" / "server" / "chunks"
+    if node_server_chunks.exists():
+        candidates.extend(sorted(node_server_chunks.glob("*.js")))
+
+    node_client_chunks = package_root / "templates" / "node" / "build" / "client" / "_app" / "immutable" / "chunks"
+    if node_client_chunks.exists():
+        candidates.extend(sorted(node_client_chunks.glob("*.js")))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        if not path.is_file():
+            continue
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _patch_gradio_upload_chunk_size() -> None:
+    global _GRADIO_UPLOAD_PATCH_APPLIED
+    if _GRADIO_UPLOAD_PATCH_APPLIED:
+        return
+    _GRADIO_UPLOAD_PATCH_APPLIED = True
+
+    chunk_size = _resolve_gradio_upload_chunk_size()
+    if chunk_size >= 1000:
+        return
+
+    # Gradio 5 bundles the upload client in prebuilt JS. We rewrite its per-request
+    # batch size to avoid proxy/platform body-size 413 errors on directory uploads.
+    chunk_pattern = re.compile(r"const chunkSize\s*=\s*(?:\d+(?:e\d+)?)\s*;")
+    minified_pattern = re.compile(
+        r"const n=(?:\d+(?:e\d+)?),i=\[\];let a;for\(let s=0;s<t\.length;s\+=n\)\{"
+    )
+    chunk_replacement = f"const chunkSize = {chunk_size};"
+    minified_replacement = f"const n={chunk_size},i=[];let a;for(let s=0;s<t.length;s+=n){{"
+
+    patched_files = 0
+    for asset_path in _candidate_gradio_js_assets():
+        try:
+            original = asset_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        updated = chunk_pattern.sub(chunk_replacement, original)
+        updated = minified_pattern.sub(minified_replacement, updated)
+        if updated == original:
+            continue
+
+        try:
+            asset_path.write_text(updated, encoding="utf-8")
+            patched_files += 1
+        except OSError:
+            logger.warning("Could not patch Gradio asset %s", asset_path, exc_info=True)
+
+    if patched_files:
+        logger.info(
+            "Patched Gradio upload batching to %s files/request across %s asset file(s).",
+            chunk_size,
+            patched_files,
+        )
+    else:
+        logger.warning(
+            "Did not patch any Gradio upload asset files; upload batching may remain at Gradio defaults."
+        )
 
 def add_middleware_redirect(app, app_route: str):
     """
@@ -107,6 +207,7 @@ def mount_gradio_app(*args, secret_key: str | None = None, **kwargs):
     app = args[0]
     path = args[2]
 
+    _patch_gradio_upload_chunk_size()
     add_middleware_redirect(app, path)
     add_login_routes(app, path)
 
