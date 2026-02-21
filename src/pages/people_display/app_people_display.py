@@ -450,11 +450,11 @@ def make_people_display_app() -> gr.Blocks:
             inputs=[proposal_view_mode, proposal_markdown],
             outputs=[proposal_markdown, proposal_preview],
         )
-        proposal_markdown.input(
+        proposal_markdown.blur(
             timed_page_load(
                 "/people-display",
                 _toggle_proposal_markdown_view,
-                label="live_toggle_proposal_markdown_view",
+                label="blur_toggle_proposal_markdown_view",
             ),
             inputs=[proposal_view_mode, proposal_markdown],
             outputs=[proposal_markdown, proposal_preview],

@@ -20,7 +20,12 @@ from src.db import readonly_session_scope, session_scope
 from src.gcs_storage import media_path, upload_bytes
 from src.login_logic import get_user
 from src.theory_proposal_diffs import upsert_theory_diff_payload
-from src.theory_taxonomy import ensure_theory_person, ensure_theory_title, sync_theory_card_taxonomy
+from src.theory_taxonomy import (
+    ensure_theory_name_available,
+    ensure_theory_person,
+    ensure_theory_title,
+    sync_theory_card_taxonomy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +162,10 @@ def _display_name_from_slug(slug: str) -> str:
     if not parts:
         return "Unknown"
     return " ".join(part.capitalize() for part in parts)
+
+
+def _normalize_name_key(value: str) -> str:
+    return str(value or "").strip().lower()
 
 
 def _parse_inline_tags(raw_value: str) -> List[str]:
@@ -2071,6 +2080,11 @@ def _submit_card_proposal(
                 gr.update(value=None),
                 gr.update(),
             )
+        base_name_key = _normalize_name_key(str(person.get("name") or ""))
+        proposed_name_key = _normalize_name_key(proposed_name)
+        if proposed_name_key != base_name_key:
+            with readonly_session_scope() as session:
+                ensure_theory_name_available(session, proposed_name, exclude_slug=slug)
 
         base_snapshot = _card_snapshot_from_person(person)
         proposed_snapshot = {
@@ -2112,6 +2126,8 @@ def _submit_card_proposal(
 
         _ensure_local_db()
         with session_scope() as session:
+            if proposed_name_key != base_name_key:
+                ensure_theory_name_available(session, proposed_name, exclude_slug=slug)
             proposal_id = int(
                 session.execute(
                     text(
@@ -2366,7 +2382,10 @@ def _submit_new_profile_proposal(
         note_value = str(proposal_note or "").strip()
 
         _ensure_local_db()
+        with readonly_session_scope() as session:
+            ensure_theory_name_available(session, proposed_name)
         with session_scope() as session:
+            ensure_theory_name_available(session, proposed_name)
             person_id = ensure_theory_person(session, proposed_name)
             slug = _next_available_proposal_slug(session, proposed_name)
 

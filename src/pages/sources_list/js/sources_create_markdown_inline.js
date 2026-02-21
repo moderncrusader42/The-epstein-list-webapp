@@ -87,6 +87,7 @@
     console.log("[MD_CREATE_DEBUG] Dispatching input and change events on textarea");
     textarea.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     textarea.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    textarea.dispatchEvent(new Event("blur"));
   };
 
   const setRawTextareaValue = (textarea, value, { emitEvents = false, forceEmit = false } = {}) => {
@@ -119,9 +120,7 @@
   const normalizeMarkdownOutput = (value) =>
     String(value || "")
       .replace(/\r\n/g, "\n")
-      .replace(/[ \t]+$/gm, "")
-      .replace(/^\n+/, "")
-      .replace(/\n+$/, "");  // Trim trailing newlines (intentional blank lines are preserved as nbsp paragraphs)
+      .replace(/[ \t]+$/gm, "");
 
   const renderInlineMarkdown = (node) => {
     if (node instanceof Text) {
@@ -820,11 +819,8 @@
         syncRawSummaryFromPreview({ emitEvents: true, force: true, forceEmit: true });
       }
     };
-    if (immediate) {
-      run();
-      return;
-    }
-    compileTimerId = window.setTimeout(run, COMPILE_DELAY_MS);
+    if (!immediate) return;
+    run();
   };
 
   const updateSummaryPreviewEditorMode = () => {
@@ -891,7 +887,6 @@
         return;
       }
       scheduleRawSummarySync();
-      scheduleCompileSync({ immediate: false });
     });
 
     previewEditor.addEventListener("blur", () => {

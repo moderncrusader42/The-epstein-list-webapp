@@ -16,6 +16,7 @@ from src.pages.sources_list.core_sources import (
     _cancel_source_editor_for_individual,
     _load_sources_individual_editor_page,
     _open_source_editor_for_individual,
+    _refresh_source_editor_markdown_preview,
     _rerender_source_files_for_individual_page,
     _save_source_editor_for_individual,
     _sync_create_file_origins_editor,
@@ -291,6 +292,16 @@ def make_sources_individual_app() -> gr.Blocks:
             ),
             inputs=[edit_description_view_mode, edit_description_markdown],
             outputs=[edit_description_markdown, edit_description_preview],
+            show_progress=False,
+        )
+        edit_description_markdown.blur(
+            timed_page_load(
+                "/sources-individual",
+                _refresh_source_editor_markdown_preview,
+                label="blur_refresh_source_editor_markdown_preview",
+            ),
+            inputs=[edit_description_markdown],
+            outputs=[edit_description_preview],
             show_progress=False,
         )
 

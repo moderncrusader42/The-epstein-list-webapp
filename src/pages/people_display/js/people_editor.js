@@ -452,6 +452,7 @@
     if (emitEvents && (changed || forceEmit)) {
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
       textarea.dispatchEvent(new Event("change", { bubbles: true }));
+      textarea.dispatchEvent(new Event("blur"));
     }
   };
 
@@ -3433,9 +3434,7 @@
     );
     return raw
       .replace(/\r\n/g, "\n")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+      .replace(/[ \t]+\n/g, "\n");
   };
 
   const syncRawFromPreview = ({ emitEvents = false, forceEmit = false } = {}) => {
@@ -3478,11 +3477,8 @@
       syncRawFromPreview({ emitEvents: true, forceEmit: true });
       rerenderCompiledPreviewFromRaw({ selectionState });
     };
-    if (immediate) {
-      run();
-      return;
-    }
-    compiledPreviewSyncTimerId = window.setTimeout(run, COMPILED_PREVIEW_DEBOUNCE_MS);
+    if (!immediate) return;
+    run();
   };
 
   const applyPasteAsPlainText = (event) => {
@@ -3588,11 +3584,10 @@
     boundEditors.add(editor);
     editor.addEventListener("input", () => {
       scheduleSyncRawFromPreview();
-      scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: true });
     });
     editor.addEventListener("input", scheduleImageResizeOverlayPosition);
     editor.addEventListener("blur", () => {
-      scheduleCompiledPreviewRerender({ immediate: false, preserveSelection: false });
+      scheduleCompiledPreviewRerender({ immediate: true, preserveSelection: false });
     });
     editor.addEventListener("paste", applyPasteAsPlainText);
     editor.addEventListener("copy", handleCompiledClipboardEvent);

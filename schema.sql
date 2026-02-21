@@ -399,6 +399,10 @@ CREATE INDEX IF NOT EXISTS idx_people_titles_code
 CREATE INDEX IF NOT EXISTS idx_people_name
   ON app.people(name);
 
+CREATE UNIQUE INDEX IF NOT EXISTS ux_people_name_normalized
+  ON app.people ((LOWER(BTRIM(name))))
+  WHERE NULLIF(BTRIM(name), '') IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_people_tags_code
   ON app.people_tags(code);
 
@@ -450,6 +454,10 @@ CREATE INDEX IF NOT EXISTS idx_theory_titles_code
 CREATE INDEX IF NOT EXISTS idx_theory_name
   ON app.theories(name);
 
+CREATE UNIQUE INDEX IF NOT EXISTS ux_theories_name_normalized
+  ON app.theories ((LOWER(BTRIM(name))))
+  WHERE NULLIF(BTRIM(name), '') IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_theory_tags_code
   ON app.theory_tags(code);
 
@@ -488,6 +496,10 @@ CREATE INDEX IF NOT EXISTS idx_theory_change_events_actor_user_id
 
 CREATE INDEX IF NOT EXISTS idx_sources_cards_name
   ON app.sources_cards(name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sources_cards_name_normalized
+  ON app.sources_cards ((LOWER(BTRIM(name))))
+  WHERE NULLIF(BTRIM(name), '') IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_sources_cards_bucket
   ON app.sources_cards(bucket);

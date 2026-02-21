@@ -91,6 +91,10 @@ def _normalize_tag(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def _normalize_name_key(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
 def _sanitize_filename(name: str) -> str:
     cleaned = SAFE_FILENAME_RE.sub("-", str(name or "").strip())
     cleaned = cleaned.strip(" .-")
@@ -688,6 +692,36 @@ def _ensure_sources_db_once() -> None:
         )
 
         session.execute(text("CREATE INDEX IF NOT EXISTS idx_sources_cards_name ON app.sources_cards(name)"))
+        session.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_indexes
+                    WHERE schemaname = 'app'
+                      AND indexname = 'ux_sources_cards_name_normalized'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM (
+                      SELECT LOWER(BTRIM(name)) AS normalized_name
+                      FROM app.sources_cards
+                      WHERE NULLIF(BTRIM(name), '') IS NOT NULL
+                      GROUP BY LOWER(BTRIM(name))
+                      HAVING COUNT(*) > 1
+                    ) AS duplicate_names
+                  )
+                  THEN
+                    EXECUTE 'CREATE UNIQUE INDEX ux_sources_cards_name_normalized '
+                            'ON app.sources_cards ((LOWER(BTRIM(name)))) '
+                            'WHERE NULLIF(BTRIM(name), '''') IS NOT NULL';
+                  END IF;
+                END$$;
+                """
+            )
+        )
         session.execute(text("CREATE INDEX IF NOT EXISTS idx_sources_cards_bucket ON app.sources_cards(bucket)"))
         session.execute(
             text("CREATE INDEX IF NOT EXISTS idx_sources_cards_folder_prefix ON app.sources_cards(folder_prefix)")
@@ -1800,6 +1834,39 @@ def _source_slug_exists(session, slug: str) -> bool:
             {"slug": str(slug or "").strip().lower()},
         ).scalar_one()
     )
+
+
+def _find_source_slug_by_name(session, name: str, *, exclude_slug: str = "") -> str | None:
+    label = (name or "").strip()
+    if not label:
+        return None
+    normalized_exclude_slug = str(exclude_slug or "").strip().lower()
+    row = session.execute(
+        text(
+            """
+            SELECT slug
+            FROM app.sources_cards
+            WHERE LOWER(BTRIM(name)) = LOWER(BTRIM(:name))
+              AND (:exclude_slug = '' OR slug <> :exclude_slug)
+            ORDER BY slug
+            LIMIT 1
+            """
+        ),
+        {"name": label, "exclude_slug": normalized_exclude_slug},
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    slug = str(row).strip().lower()
+    return slug or None
+
+
+def _ensure_source_name_available(session, name: str, *, exclude_slug: str = "") -> None:
+    label = (name or "").strip()
+    if not label:
+        return
+    conflict_slug = _find_source_slug_by_name(session, label, exclude_slug=exclude_slug)
+    if conflict_slug:
+        raise ValueError(f"Source name `{label}` is already used by `{conflict_slug}`.")
 
 
 def _next_available_source_slug(session, seed: str) -> str:
@@ -3231,6 +3298,11 @@ def _save_source_editor_for_individual(
             raise ValueError("Selected source was not found.")
         if not name_value:
             raise ValueError("Source name is required.")
+        base_name_key = _normalize_name_key(str(base_source.get("name") or ""))
+        proposed_name_key = _normalize_name_key(name_value)
+        if proposed_name_key != base_name_key:
+            with readonly_session_scope() as session:
+                _ensure_source_name_available(session, name_value, exclude_slug=normalized_slug)
 
         auto_accept = _user_has_editor_privilege(user)
         current_tags = {
@@ -3274,6 +3346,8 @@ def _save_source_editor_for_individual(
 
             if source_row is None:
                 raise ValueError("Selected source was not found.")
+            if proposed_name_key != base_name_key:
+                _ensure_source_name_available(session, name_value, exclude_slug=normalized_slug)
 
             source_id = int(source_row["id"])
             bucket_value = str(source_row["bucket"] or DEFAULT_SOURCE_BUCKET).strip() or DEFAULT_SOURCE_BUCKET
@@ -3761,6 +3835,9 @@ def _create_source_card(
         name_value = str(source_name or "").strip()
         if not name_value:
             raise ValueError("Source name is required.")
+        _ensure_sources_db()
+        with readonly_session_scope() as session:
+            _ensure_source_name_available(session, name_value)
 
         description_markdown_value = str(source_description_markdown or "").strip()
         cover_upload_path = _extract_upload_path(source_cover_media)
@@ -3783,6 +3860,7 @@ def _create_source_card(
             actor_user_id = _resolve_or_create_actor_user_id(session, user)
             if actor_user_id <= 0:
                 raise ValueError("Could not resolve your user id.")
+            _ensure_source_name_available(session, name_value)
 
             unsorted_rows = _fetch_unsorted_files_by_ids(session, selected_unsorted_ids)
             if selected_unsorted_ids and len(unsorted_rows) != len(selected_unsorted_ids):

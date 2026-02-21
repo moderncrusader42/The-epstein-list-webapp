@@ -392,21 +392,11 @@ def make_sources_create_app() -> gr.Blocks:
             outputs=[create_description_markdown, create_description_preview],
             show_progress=False,
         )
-        create_description_markdown.input(
+        create_description_markdown.blur(
             timed_page_load(
                 "/source-create",
                 _refresh_source_editor_markdown_preview,
-                label="live_refresh_source_create_markdown_preview",
-            ),
-            inputs=[create_description_markdown],
-            outputs=[create_description_preview],
-            show_progress=False,
-        )
-        create_description_markdown.change(
-            timed_page_load(
-                "/source-create",
-                _refresh_source_editor_markdown_preview,
-                label="change_refresh_source_create_markdown_preview",
+                label="blur_refresh_source_create_markdown_preview",
             ),
             inputs=[create_description_markdown],
             outputs=[create_description_preview],

@@ -417,7 +417,6 @@ button#the-list-delete-btn:focus-visible {
 
 #person-detail-markdown {
   position: relative;
-  padding-top: 2.8rem;
 }
 
 #person-detail-markdown #the-list-markdown-edit-btn {
@@ -871,7 +870,7 @@ button#the-list-delete-btn:focus-visible {
 }
 
 #person-detail-markdown {
-  padding: 2.8rem 1.1rem 1rem;
+  padding: 1rem 3.2rem 1rem 1.1rem;
 }
 
 #person-detail-markdown h1,
@@ -881,6 +880,18 @@ button#the-list-delete-btn:focus-visible {
 #the-list-proposal-preview h2,
 #the-list-proposal-preview h3 {
   color: var(--people-text-main);
+}
+
+#person-detail-markdown .prose > :first-child,
+#the-list-proposal-preview .prose > :first-child,
+#the-list-proposal-preview .the-list-visual-editor > :first-child {
+  margin-top: 0;
+}
+
+#person-detail-markdown .prose p:first-child:empty,
+#the-list-proposal-preview .prose p:first-child:empty,
+#the-list-proposal-preview .the-list-visual-editor > p:first-child:empty {
+  display: none;
 }
 
 #person-detail-markdown table,
@@ -2395,7 +2406,7 @@ button#the-list-admin-decline-btn {
   }
 
   #person-detail-markdown {
-    padding: 2.55rem 0.82rem 0.82rem;
+    padding: 0.82rem 3.2rem 0.82rem 0.82rem;
   }
 
   .the-list-card-image-crop-modal {

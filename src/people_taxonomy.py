@@ -27,23 +27,43 @@ def _decode_tags(raw_value: object) -> list[str]:
     return [str(item).strip().lower() for item in parsed if str(item).strip()]
 
 
-def ensure_people_person(session: Session, name: str) -> int:
-    label = (name or "").strip() or "Unknown"
-    existing_id = session.execute(
+def find_people_slug_by_name(session: Session, name: str, *, exclude_slug: str = "") -> str | None:
+    label = (name or "").strip()
+    if not label:
+        return None
+    normalized_exclude_slug = (exclude_slug or "").strip().lower()
+    row = session.execute(
         text(
             """
-            SELECT id
-            FROM app.people
-            WHERE lower(name) = lower(:name)
-            ORDER BY id ASC
+            SELECT c.slug
+            FROM app.people_cards c
+            JOIN app.people p
+              ON p.id = c.person_id
+            WHERE LOWER(BTRIM(p.name)) = LOWER(BTRIM(:name))
+              AND (:exclude_slug = '' OR c.slug <> :exclude_slug)
+            ORDER BY c.slug
             LIMIT 1
             """
         ),
-        {"name": label},
+        {"name": label, "exclude_slug": normalized_exclude_slug},
     ).scalar_one_or_none()
-    if existing_id is not None:
-        return int(existing_id)
+    if row is None:
+        return None
+    slug = str(row).strip().lower()
+    return slug or None
 
+
+def ensure_people_name_available(session: Session, name: str, *, exclude_slug: str = "") -> None:
+    label = (name or "").strip()
+    if not label:
+        return
+    conflict_slug = find_people_slug_by_name(session, label, exclude_slug=exclude_slug)
+    if conflict_slug:
+        raise ValueError(f"Card name `{label}` is already used by `{conflict_slug}`.")
+
+
+def ensure_people_person(session: Session, name: str) -> int:
+    label = (name or "").strip() or "Unknown"
     return int(
         session.execute(
             text(
@@ -91,6 +111,36 @@ def ensure_people_taxonomy_schema(session: Session) -> None:
         )
     )
     session.execute(text("CREATE INDEX IF NOT EXISTS idx_people_name ON app.people(name)"))
+    session.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE schemaname = 'app'
+                  AND indexname = 'ux_people_name_normalized'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM (
+                  SELECT LOWER(BTRIM(name)) AS normalized_name
+                  FROM app.people
+                  WHERE NULLIF(BTRIM(name), '') IS NOT NULL
+                  GROUP BY LOWER(BTRIM(name))
+                  HAVING COUNT(*) > 1
+                ) AS duplicate_names
+              )
+              THEN
+                EXECUTE 'CREATE UNIQUE INDEX ux_people_name_normalized '
+                        'ON app.people ((LOWER(BTRIM(name)))) '
+                        'WHERE NULLIF(BTRIM(name), '''') IS NOT NULL';
+              END IF;
+            END$$;
+            """
+        )
+    )
 
     session.execute(
         text(

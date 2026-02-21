@@ -716,6 +716,14 @@ button#sources-edit-btn:focus-visible {
   margin-top: 0;
 }
 
+#sources-edit-summary-preview .prose p:first-child {
+  margin-top: 0 !important;
+}
+
+#sources-edit-summary-preview .prose p:first-child:empty {
+  display: none;
+}
+
 /* Ensure empty paragraphs and divs have height when editing */
 #sources-edit-summary-preview .sources-visual-editor--active p:empty::before,
 #sources-edit-summary-preview .sources-visual-editor--active div:empty::before {
@@ -1336,6 +1344,10 @@ body.the-list-card-image-crop-open {
   overflow: visible;
 }
 
+#sources-browser-head-shell.sources-browser-head-shell--editing-hidden {
+  display: none !important;
+}
+
 .source-browser-head h3,
 #sources-browser-head-meta h3 {
   margin: 0;
@@ -1373,6 +1385,10 @@ body.the-list-card-image-crop-open {
   z-index: 1;
 }
 
+#sources-browser-head-description.sources-browser-head-description--editing-hidden {
+  display: none !important;
+}
+
 #sources-browser-head-description .prose {
   max-width: none;
   margin: 0;
@@ -1392,6 +1408,14 @@ body.the-list-card-image-crop-open {
 
 #sources-browser-head-description > :first-child {
   margin-top: 0;
+}
+
+#sources-browser-head-description .prose p:first-child {
+  margin-top: 0;
+}
+
+#sources-browser-head-description .prose p:first-child:empty {
+  display: none;
 }
 
 #sources-browser-head-description .prose h1,

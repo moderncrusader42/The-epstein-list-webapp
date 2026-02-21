@@ -17,6 +17,11 @@
   const SUMMARY_VISUAL_EDITOR_CLASS = "sources-visual-editor";
   const SUMMARY_VISUAL_EDITOR_ACTIVE_CLASS = "sources-visual-editor--active";
   const SUMMARY_COMPILE_DELAY_MS = 1000;
+  const SUMMARY_RECOMPILE_TOGGLE_DELAY_MS = 180;
+  const HEAD_SHELL_ID = "sources-browser-head-shell";
+  const HEAD_DESCRIPTION_ID = "sources-browser-head-description";
+  const HEAD_SHELL_EDIT_HIDDEN_CLASS = "sources-browser-head-shell--editing-hidden";
+  const HEAD_DESCRIPTION_EDIT_HIDDEN_CLASS = "sources-browser-head-description--editing-hidden";
   const TITLE_SELECTOR = "#sources-title h2";
   const TAGS_SELECTOR = "#sources-browser-head-meta .source-browser-head__tags";
   const TAG_SUGGESTION_LIMIT = 8;
@@ -66,8 +71,8 @@
     const nextValue = String(value ?? "");
     if ((input.value || "") === nextValue) return;
     input.value = nextValue;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
   };
 
   const isElementVisible = (node) => {
@@ -144,6 +149,8 @@
   const getTitleNode = () => ensureRoot().querySelector(TITLE_SELECTOR);
   const getTagsHost = () => ensureRoot().querySelector(TAGS_SELECTOR);
   const getDeleteFilesEditor = () => ensureRoot().querySelector(`#${DELETE_FILES_EDITOR_ID}`);
+  const getHeadShellNode = () => ensureRoot().querySelector(`#${HEAD_SHELL_ID}`);
+  const getHeadDescriptionNode = () => ensureRoot().querySelector(`#${HEAD_DESCRIPTION_ID}`);
 
   const isEditModeActive = () => {
     const shell = ensureRoot().querySelector(`#${EDIT_SHELL_ID}`);
@@ -212,6 +219,19 @@
     input.click();
   };
 
+  const dispatchSummaryRawTextareaEvents = (textarea) => {
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    textarea.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    textarea.dispatchEvent(new Event("blur", { composed: true }));
+    try {
+      textarea.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
+    } catch (error) {
+      void error;
+      textarea.dispatchEvent(new Event("focusout", { bubbles: true, composed: true }));
+    }
+  };
+
   const setSummaryRawTextareaValue = (textarea, value, { emitEvents = false, forceEmit = false } = {}) => {
     if (!(textarea instanceof HTMLTextAreaElement)) return false;
     const nextValue = String(value || "");
@@ -226,8 +246,7 @@
     }
     if (emitEvents && (changed || forceEmit)) {
       console.log("[MD_DEBUG] Dispatching input and change events");
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+      dispatchSummaryRawTextareaEvents(textarea);
     }
     return changed;
   };
@@ -241,7 +260,7 @@
   const normalizeMarkdownOutput = (value) => {
     const step1 = String(value || "").replace(/\r\n/g, "\n");
     const step2 = step1.replace(/[ \t]+$/gm, "");
-    const step3 = step2.trim();
+    const step3 = step2;
     console.log("[MD_DEBUG] normalizeMarkdownOutput:");
     console.log("  Input:", JSON.stringify(value));
     console.log("  After \\r\\n->\\n:", JSON.stringify(step1));
@@ -477,7 +496,7 @@
     });
   };
 
-  const rerenderSummaryPreviewFromRaw = () => {
+  const rerenderSummaryPreviewFromRaw = ({ delayMs = SUMMARY_RECOMPILE_TOGGLE_DELAY_MS } = {}) => {
     if (!isSummaryCompiledMode()) return;
     const rawInput = resolveSummaryModeInput("raw");
     const compiledInput = resolveSummaryModeInput("compiled");
@@ -485,10 +504,10 @@
     activateSummaryModeInput(rawInput);
     window.setTimeout(() => {
       activateSummaryModeInput(compiledInput);
-    }, 40);
+    }, Math.max(0, Number(delayMs) || 0));
   };
 
-  const scheduleSummaryCompiledRerender = ({ immediate = false } = {}) => {
+  const scheduleSummaryCompiledRerender = ({ immediate = false, emitToGradio = false } = {}) => {
     if (summaryCompileTimerId) {
       window.clearTimeout(summaryCompileTimerId);
       summaryCompileTimerId = 0;
@@ -496,16 +515,24 @@
     const run = () => {
       summaryCompileTimerId = 0;
       if (!isSummaryCompiledMode()) return;
-      const markdownValue = String(syncRawSummaryFromPreview({ emitEvents: false, force: true }) || "");
+      const markdownValue = String(
+        syncRawSummaryFromPreview({
+          emitEvents: emitToGradio,
+          force: true,
+          forceEmit: emitToGradio,
+        }) || "",
+      );
       if (markdownValue === lastCompiledSummaryMarkdown) return;
       lastCompiledSummaryMarkdown = markdownValue;
-      rerenderSummaryPreviewFromRaw();
+      rerenderSummaryPreviewFromRaw({
+        delayMs: emitToGradio ? SUMMARY_RECOMPILE_TOGGLE_DELAY_MS : 0,
+      });
     };
-    if (immediate) {
-      run();
+    if (!immediate) {
+      summaryCompileTimerId = window.setTimeout(run, SUMMARY_COMPILE_DELAY_MS);
       return;
     }
-    summaryCompileTimerId = window.setTimeout(run, SUMMARY_COMPILE_DELAY_MS);
+    run();
   };
 
   const refreshCompiledSummarySnapshot = () => {
@@ -531,10 +558,34 @@
     }
   };
 
+  const updateHeadDescriptionVisibility = () => {
+    const shellNode = getHeadShellNode();
+    const descriptionNode = getHeadDescriptionNode();
+    if (shellNode instanceof HTMLElement) {
+      shellNode.classList.toggle(HEAD_SHELL_EDIT_HIDDEN_CLASS, isEditModeActive());
+    }
+    if (!(descriptionNode instanceof HTMLElement)) return;
+    descriptionNode.classList.toggle(HEAD_DESCRIPTION_EDIT_HIDDEN_CLASS, isEditModeActive());
+  };
+
   const bindSummaryPreviewEditor = () => {
     const previewEditor = getSummaryPreviewEditor();
     if (!(previewEditor instanceof HTMLElement) || boundSummaryEditors.has(previewEditor)) return;
     boundSummaryEditors.add(previewEditor);
+    previewEditor.addEventListener("input", () => {
+      if (!isSummaryCompiledMode()) return;
+      scheduleRawSummarySync();
+    });
+    previewEditor.addEventListener("blur", () => {
+      if (!isSummaryCompiledMode()) return;
+      scheduleSummaryCompiledRerender({ immediate: true, emitToGradio: true });
+    });
+    previewEditor.addEventListener("focusout", (event) => {
+      if (!isSummaryCompiledMode()) return;
+      const relatedTarget = event.relatedTarget;
+      if (relatedTarget instanceof Node && previewEditor.contains(relatedTarget)) return;
+      scheduleSummaryCompiledRerender({ immediate: true, emitToGradio: true });
+    });
     previewEditor.addEventListener("paste", (event) => {
       if (!isSummaryCompiledMode()) return;
       const text = (event.clipboardData || window.clipboardData)?.getData("text/plain");
@@ -1103,6 +1154,7 @@
     requestAnimationFrame(() => {
       refreshScheduled = false;
       refreshSummaryEditor();
+      updateHeadDescriptionVisibility();
       refreshInlineEditor();
       refreshDeleteFilesEditor();
     });

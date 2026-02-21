@@ -30,6 +30,7 @@ from src.pages.sources_list.core_sources import _store_unsorted_files_for_source
 from src.people_proposal_diffs import ensure_people_diff_tables, upsert_people_diff_payload
 from src.people_taxonomy import (
     ensure_people_cards_refs,
+    ensure_people_name_available,
     ensure_people_person,
     ensure_people_taxonomy_schema,
     ensure_people_title,
@@ -37,6 +38,7 @@ from src.people_taxonomy import (
 )
 from src.theory_proposal_diffs import upsert_theory_diff_payload
 from src.theory_taxonomy import (
+    ensure_theory_name_available,
     ensure_theory_person,
     ensure_theory_title,
     sync_theory_card_taxonomy,
@@ -216,6 +218,10 @@ def _display_name_from_slug(slug: str) -> str:
     if not parts:
         return "Unknown"
     return " ".join(part.capitalize() for part in parts)
+
+
+def _normalize_name_key(value: str) -> str:
+    return str(value or "").strip().lower()
 
 
 def _parse_inline_tags(raw_value: str) -> List[str]:
@@ -1561,6 +1567,9 @@ def _materialize_missing_profile_for_proposal(
     with session_scope() as session:
         if not is_theory:
             _drop_people_change_proposals_slug_fk(session)
+            ensure_people_name_available(session, seed_name, exclude_slug=normalized_slug)
+        else:
+            ensure_theory_name_available(session, seed_name, exclude_slug=normalized_slug)
         if resolved_person_id > 0:
             person_exists = bool(
                 session.execute(
@@ -6847,6 +6856,11 @@ def _submit_card_proposal(
             return _response("❌ Card name cannot be empty.", proposal_note, gr.update(value=None))
         if not proposed_title:
             return _response("❌ Card title cannot be empty.", proposal_note, gr.update(value=None))
+        base_name_key = _normalize_name_key(str(person.get("name") or ""))
+        proposed_name_key = _normalize_name_key(proposed_name)
+        if proposed_name_key != base_name_key:
+            with readonly_session_scope() as session:
+                ensure_people_name_available(session, proposed_name, exclude_slug=slug)
 
         base_snapshot = _card_snapshot_from_person(person)
         proposed_snapshot = {
@@ -6874,6 +6888,8 @@ def _submit_card_proposal(
 
         _ensure_local_db()
         with session_scope() as session:
+            if proposed_name_key != base_name_key:
+                ensure_people_name_available(session, proposed_name, exclude_slug=slug)
             proposal_id = int(
                 session.execute(
                     text(
@@ -7700,6 +7716,12 @@ def _accept_admin_proposal(
                 for tag in proposed_snapshot.get("tags", [])
                 if _normalize_tag(str(tag))
             ]
+            resolved_name = proposed_name or str(person.get("name") or person_slug)
+            if _normalize_name_key(resolved_name) != _normalize_name_key(str(person.get("name") or "")):
+                if is_theory:
+                    ensure_theory_name_available(session, resolved_name, exclude_slug=person_slug)
+                else:
+                    ensure_people_name_available(session, resolved_name, exclude_slug=person_slug)
             session.execute(
                 text(
                     f"""
@@ -7710,7 +7732,7 @@ def _accept_admin_proposal(
                     """
                 ),
                 {
-                    "name": proposed_name or str(person.get("name") or person_slug),
+                    "name": resolved_name,
                     "person_id": person_id,
                 },
             )
@@ -7766,6 +7788,12 @@ def _accept_admin_proposal(
                 for tag in card_data.get("tags", [])
                 if _normalize_tag(str(tag))
             ]
+            resolved_name = proposed_name or str(person.get("name") or person_slug)
+            if _normalize_name_key(resolved_name) != _normalize_name_key(str(person.get("name") or "")):
+                if is_theory:
+                    ensure_theory_name_available(session, resolved_name, exclude_slug=person_slug)
+                else:
+                    ensure_people_name_available(session, resolved_name, exclude_slug=person_slug)
             # Update person name
             session.execute(
                 text(
@@ -7777,7 +7805,7 @@ def _accept_admin_proposal(
                     """
                 ),
                 {
-                    "name": proposed_name or str(person.get("name") or person_slug),
+                    "name": resolved_name,
                     "person_id": person_id,
                 },
             )

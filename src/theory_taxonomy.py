@@ -27,23 +27,43 @@ def _decode_tags(raw_value: object) -> list[str]:
     return [str(item).strip().lower() for item in parsed if str(item).strip()]
 
 
-def ensure_theory_person(session: Session, name: str) -> int:
-    label = (name or "").strip() or "Unknown"
-    existing_id = session.execute(
+def find_theory_slug_by_name(session: Session, name: str, *, exclude_slug: str = "") -> str | None:
+    label = (name or "").strip()
+    if not label:
+        return None
+    normalized_exclude_slug = (exclude_slug or "").strip().lower()
+    row = session.execute(
         text(
             """
-            SELECT id
-            FROM app.theories
-            WHERE lower(name) = lower(:name)
-            ORDER BY id ASC
+            SELECT c.slug
+            FROM app.theory_cards c
+            JOIN app.theories t
+              ON t.id = c.person_id
+            WHERE LOWER(BTRIM(t.name)) = LOWER(BTRIM(:name))
+              AND (:exclude_slug = '' OR c.slug <> :exclude_slug)
+            ORDER BY c.slug
             LIMIT 1
             """
         ),
-        {"name": label},
+        {"name": label, "exclude_slug": normalized_exclude_slug},
     ).scalar_one_or_none()
-    if existing_id is not None:
-        return int(existing_id)
+    if row is None:
+        return None
+    slug = str(row).strip().lower()
+    return slug or None
 
+
+def ensure_theory_name_available(session: Session, name: str, *, exclude_slug: str = "") -> None:
+    label = (name or "").strip()
+    if not label:
+        return
+    conflict_slug = find_theory_slug_by_name(session, label, exclude_slug=exclude_slug)
+    if conflict_slug:
+        raise ValueError(f"Card name `{label}` is already used by `{conflict_slug}`.")
+
+
+def ensure_theory_person(session: Session, name: str) -> int:
+    label = (name or "").strip() or "Unknown"
     return int(
         session.execute(
             text(
@@ -78,8 +98,36 @@ def ensure_theory_title(session: Session, title: str) -> int:
 
 
 def ensure_theory_taxonomy_schema(session: Session) -> None:
-    _ = session
-    return
+    session.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE schemaname = 'app'
+                  AND indexname = 'ux_theories_name_normalized'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM (
+                  SELECT LOWER(BTRIM(name)) AS normalized_name
+                  FROM app.theories
+                  WHERE NULLIF(BTRIM(name), '') IS NOT NULL
+                  GROUP BY LOWER(BTRIM(name))
+                  HAVING COUNT(*) > 1
+                ) AS duplicate_names
+              )
+              THEN
+                EXECUTE 'CREATE UNIQUE INDEX ux_theories_name_normalized '
+                        'ON app.theories ((LOWER(BTRIM(name)))) '
+                        'WHERE NULLIF(BTRIM(name), '''') IS NOT NULL';
+              END IF;
+            END$$;
+            """
+        )
+    )
 
 
 def ensure_theory_cards_refs(session: Session) -> None:

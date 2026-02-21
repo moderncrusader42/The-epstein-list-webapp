@@ -22,6 +22,7 @@ from src.login_logic import get_user
 from src.people_proposal_diffs import ensure_people_diff_tables, upsert_people_diff_payload
 from src.people_taxonomy import (
     ensure_people_cards_refs,
+    ensure_people_name_available,
     ensure_people_person,
     ensure_people_taxonomy_schema,
     ensure_people_title,
@@ -151,6 +152,10 @@ def _display_name_from_slug(slug: str) -> str:
     if not parts:
         return "Unknown"
     return " ".join(part.capitalize() for part in parts)
+
+
+def _normalize_name_key(value: str) -> str:
+    return str(value or "").strip().lower()
 
 
 def _parse_inline_tags(raw_value: str) -> List[str]:
@@ -2613,6 +2618,11 @@ def _submit_card_proposal(
                 gr.update(value=None),
                 gr.update(),
             )
+        base_name_key = _normalize_name_key(str(person.get("name") or ""))
+        proposed_name_key = _normalize_name_key(proposed_name)
+        if proposed_name_key != base_name_key:
+            with readonly_session_scope() as session:
+                ensure_people_name_available(session, proposed_name, exclude_slug=slug)
 
         base_snapshot = _card_snapshot_from_person(person)
         proposed_snapshot = {
@@ -2654,6 +2664,8 @@ def _submit_card_proposal(
 
         _ensure_local_db()
         with session_scope() as session:
+            if proposed_name_key != base_name_key:
+                ensure_people_name_available(session, proposed_name, exclude_slug=slug)
             proposal_id = int(
                 session.execute(
                     text(
@@ -2908,8 +2920,11 @@ def _submit_new_profile_proposal(
         note_value = str(proposal_note or "").strip()
 
         _ensure_local_db()
+        with readonly_session_scope() as session:
+            ensure_people_name_available(session, proposed_name)
         with session_scope() as session:
             _drop_people_change_proposals_slug_fk(session)
+            ensure_people_name_available(session, proposed_name)
 
             person_id = ensure_people_person(session, proposed_name)
             slug = _next_available_proposal_slug(session, proposed_name)

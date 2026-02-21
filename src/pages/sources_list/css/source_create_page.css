@@ -141,6 +141,14 @@
   margin-top: 0;
 }
 
+#sources-create-summary-preview .sources-visual-editor > p:first-child {
+  margin-top: 0;
+}
+
+#sources-create-summary-preview .sources-visual-editor > p:first-child:empty {
+  display: none;
+}
+
 #sources-create-summary-preview .sources-visual-editor--active {
   cursor: text;
 }
